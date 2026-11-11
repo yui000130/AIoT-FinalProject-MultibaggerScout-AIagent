@@ -171,8 +171,8 @@ streamlit run app.py       # 瀏覽器開啟 http://localhost:8501（全市場�
 2. 下載專案並安裝套件：
 
    ```bash
-   git clone https://github.com/yui000130/AIoT-FinalProject.git
-   cd AIoT-FinalProject
+   git clone https://github.com/yui000130/AIoT-FinalProject-MultibaggerScout-AIagent.git
+   cd AIoT-FinalProject-MultibaggerScout-AIagent
    pip install -r requirements.txt
    ```
 
