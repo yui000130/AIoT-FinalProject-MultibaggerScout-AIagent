@@ -1,9 +1,10 @@
 """
 collect_data.py －全市場資料收集
 
-收集臺灣證券交易所上市普通股（包含 2012 年後下市的公司）的 9 種 FinMind 資料：
+收集臺灣證券交易所上市普通股（包含 2012 年後下市的公司）的 11 種 FinMind 資料：
 （研究範圍只有上市；上櫃與興櫃不納入，2026-11-10 決定）
-損益表、資產負債表、現金流量表、月營收、每日股價、本益比/淨值比/殖利率、除權息結果、減資恢復買賣參考價、股票分割參考價。
+損益表、資產負債表、現金流量表、月營收、每日股價、本益比/淨值比/殖利率、除權息結果、減資恢復買賣參考價、股票分割參考價、
+外資持股（含每日發行股數）、三大法人買賣超。
 另外抓 0050 的每日股價、除權息結果與分割參考價，作為實驗 E2 的買進持有基準（0050 是 ETF，不在普通股清單內）。
 
 設計要求：
@@ -13,23 +14,31 @@ collect_data.py －全市場資料收集
   - 輸出 Parquet：全部抓完後，每個資料集合併成一個檔案
 
 額度：2026-11-09 實測未註冊每小時約 2,200 次（以過去一小時滾動計算），比官方文件寫的 300 次多。
-全市場約 1,320 檔 × 9 種 ≈ 11,900 次，約需 5～6 小時（可分多次跑；之後新增資料集只會抓新的部分）。
+全市場約 1,320 檔 × 11 種 ≈ 14,500 次，約需 6～7 小時（可分多次跑；之後新增資料集只會抓新的部分）。
+外資持股與法人買賣超是延伸用資料（DESIGN.md 2.3），核心特徵目前不使用。
 
 執行：
   python collect_data.py              # 開始或接續收集，全部完成後自動合併
   python collect_data.py --limit 5    # 只跑前 5 檔，先試跑
   python collect_data.py --merge      # 不抓資料，只把已抓的小檔合併成 Parquet
   python collect_data.py --status     # 不抓資料，只看目前進度（收集中也可以另開視窗看）
+  python collect_data.py --refresh-twse  # 重新下載證交所的上市與終止上市清單，再開始收集
 
-輸入：TaiwanStockInfo、TaiwanStockDelisting（股票清單，沿用 cache/）
+研究範圍（2026-11-12 起改用證交所官網的兩份公開清單，見 DESIGN.md 5.1、5.2）：
+  - 現在上市的普通股：證交所 ISIN 清單（含上市日期；上櫃轉上市記的是轉上市那天）
+  - 2012 年後終止上市的普通股：證交所「終止上市公司」名單（含下市日期）
+  FinMind 的 TaiwanStockDelisting 是「下市櫃」表，2012 年後那 93 家經比對全部不是終止上市的公司；
+  TaiwanStockInfo 的紀錄只到 2020 年，無法判斷當年是否上市。兩者都不再用來決定範圍。
+
+輸入：證交所兩份公開清單（data/raw/twse_listed.csv、twse_delisted.csv；沒有才下載，--refresh-twse 重抓）
 輸出：data/raw/parts/{dataset}/{stock_id}.parquet（逐檔小檔，用於接續）
       data/raw/{dataset}.parquet（合併後的正式輸出，供 build_dataset.py 使用）
-      data/raw/universe.csv（研究範圍股票清單）
+      data/raw/universe.csv（研究範圍股票清單，含上市日、下市日）
       data/raw/progress.txt、progress.csv、collect.log（進度摘要、每檔明細、完整紀錄）
-負責：游雅筑
 """
 
 import argparse
+import io
 import sys
 import time
 from datetime import datetime, timedelta
@@ -62,6 +71,8 @@ DATASETS = [
     "TaiwanStockDividendResult",
     "TaiwanStockCapitalReductionReferencePrice",   # 減資恢復買賣參考價（2026-11-10 加入，修正含息報酬）
     "TaiwanStockSplitPrice",                       # 股票分割／面額變更參考價（同上）
+    "TaiwanStockShareholding",                     # 外資持股與每日發行股數（2026-11-12 加入，2005 起）
+    "TaiwanStockInstitutionalInvestorsBuySell",    # 三大法人買賣超（2026-11-12 加入，2012-05 起）
 ]
 BENCHMARK_DATASETS = ["TaiwanStockPrice", "TaiwanStockDividendResult", "TaiwanStockSplitPrice"]  # 0050 於 2025 年分割
 
@@ -76,7 +87,15 @@ DS_SHORT = {   # 進度顯示用的簡稱
     "TaiwanStockDividendResult": "除權息",
     "TaiwanStockCapitalReductionReferencePrice": "減資",
     "TaiwanStockSplitPrice": "分割",
+    "TaiwanStockShareholding": "外資持股",
+    "TaiwanStockInstitutionalInvestorsBuySell": "法人買賣",
 }
+# 證交所官網的公開清單（只用來判定研究範圍與上市、下市日期）
+TWSE_LISTED_URL = "https://isin.twse.com.tw/isin/C_public.jsp?strMode=2"
+TWSE_DELISTED_URL = "https://www.twse.com.tw/rwd/zh/company/suspendListingCsvAndHtml?type=html&lang=zh"
+TWSE_LISTED_FILE = RAW_DIR / "twse_listed.csv"
+TWSE_DELISTED_FILE = RAW_DIR / "twse_delisted.csv"
+
 LOG_FILE = RAW_DIR / "collect.log"
 PROGRESS_FILE = RAW_DIR / "progress.csv"    # 每檔股票 × 資料集的結果，可用 Excel 開
 SUMMARY_FILE = RAW_DIR / "progress.txt"     # 整體進度摘要，隨時打開看
@@ -95,24 +114,67 @@ def log(msg):
 
 
 # ───────────── 股票清單 ─────────────
-def get_universe():
-    """回傳研究範圍的股票清單（DataFrame：stock_id、stock_name、status）：
-    目前上市普通股＋2012 年後下市的公司。篩選方式與 verify_data.py 相同。"""
-    info = vd.fetch("TaiwanStockInfo")
-    info = info.sort_values("date").drop_duplicates("stock_id", keep="last")
-    listed = info[(info["type"] == "twse") & info["stock_id"].str.fullmatch(vd.COMMON_STOCK_ID)]
+def _download(url):
+    resp = requests.get(url, timeout=120, headers={"User-Agent": "Mozilla/5.0"})
+    resp.raise_for_status()
+    return resp.content
 
-    delist = vd.fetch("TaiwanStockDelisting")
-    delist["date"] = pd.to_datetime(delist["date"])
-    delist = delist[delist["stock_id"].str.fullmatch(vd.COMMON_STOCK_ID)]
-    delist = delist[(delist["date"] >= DELISTED_SINCE) & ~delist["stock_id"].isin(listed["stock_id"])]
-    delist = delist.sort_values("date").drop_duplicates("stock_id", keep="last")
 
+def fetch_twse_lists(refresh=False):
+    """下載證交所兩份公開清單並存成 CSV；檔案已存在且不 refresh 就直接讀。
+
+    twse_listed.csv  ：現在上市的有價證券（ISIN 清單「股票」類），stock_id、stock_name、listed_date、market、industry、cfi
+    twse_delisted.csv：終止上市公司，stock_id、stock_name、delisted_date（民國年轉西元）
+    """
+    if refresh or not TWSE_LISTED_FILE.exists():
+        html = _download(TWSE_LISTED_URL).decode("big5hkscs", errors="replace")
+        t = pd.read_html(io.StringIO(html), header=0)[0]
+        t.columns = ["code_name", "isin", "listed_date", "market", "industry", "cfi", "note"]
+        t = t[t["cfi"].astype(str).str.startswith("E")]          # 只留股票類（ES＝普通股，ED＝存託憑證等）
+        parts = t["code_name"].str.split(r"\s+", n=1, expand=True)
+        t = t.assign(stock_id=parts[0], stock_name=parts[1],
+                     listed_date=pd.to_datetime(t["listed_date"], format="%Y/%m/%d", errors="coerce"))
+        t = t[["stock_id", "stock_name", "listed_date", "market", "industry", "cfi"]]
+        t.to_csv(TWSE_LISTED_FILE, index=False, encoding="utf-8-sig")
+        log(f"下載證交所上市清單：{len(t):,} 筆 → {TWSE_LISTED_FILE.relative_to(BASE)}")
+    if refresh or not TWSE_DELISTED_FILE.exists():
+        html = _download(TWSE_DELISTED_URL).decode("utf-8")
+        d = pd.read_html(io.StringIO(html))[0]
+        d.columns = ["date", "stock_name", "stock_id"]
+        d["stock_id"] = d["stock_id"].astype(str).str.zfill(4)
+        ymd = d["date"].str.extract(r"(\d+)年(\d+)月(\d+)日").astype(int)
+        d["delisted_date"] = pd.to_datetime(dict(year=ymd[0] + 1911, month=ymd[1], day=ymd[2]))
+        d = d[["stock_id", "stock_name", "delisted_date"]]
+        d.to_csv(TWSE_DELISTED_FILE, index=False, encoding="utf-8-sig")
+        log(f"下載證交所終止上市名單：{len(d):,} 筆 → {TWSE_DELISTED_FILE.relative_to(BASE)}")
+    listed = pd.read_csv(TWSE_LISTED_FILE, dtype={"stock_id": str}, parse_dates=["listed_date"], encoding="utf-8-sig")
+    delisted = pd.read_csv(TWSE_DELISTED_FILE, dtype={"stock_id": str}, parse_dates=["delisted_date"], encoding="utf-8-sig")
+    return listed, delisted
+
+
+def is_depositary_receipt(stock_id, stock_name):
+    """存託憑證：91 開頭或名稱含 DR（99xx 等 9 開頭的普通股不算）。"""
+    return stock_id.startswith("91") or "DR" in str(stock_name).upper()
+
+
+def get_universe(refresh_twse=False):
+    """回傳研究範圍的股票清單（DataFrame：stock_id、stock_name、status、listed_date、delisted_date）：
+    證交所現在上市的普通股＋2012 年後終止上市的普通股（排除存託憑證）。
+
+    已下市公司的上市日期官方清單沒有，留空，由 build_dataset.py 以股價與興櫃判定推估。
+    """
+    listed, delisted = fetch_twse_lists(refresh_twse)
+    cur = listed[(listed["cfi"].str.startswith("ES")) & listed["stock_id"].str.fullmatch(vd.COMMON_STOCK_ID)]
+    gone = delisted[(delisted["delisted_date"] >= DELISTED_SINCE)
+                    & delisted["stock_id"].str.fullmatch(vd.COMMON_STOCK_ID)
+                    & ~delisted.apply(lambda r: is_depositary_receipt(r["stock_id"], r["stock_name"]), axis=1)
+                    & ~delisted["stock_id"].isin(cur["stock_id"])]
+    gone = gone.sort_values("delisted_date").drop_duplicates("stock_id", keep="last")
     uni = pd.concat([
-        listed[["stock_id", "stock_name"]].assign(status="上市中"),
-        delist[["stock_id", "stock_name"]].assign(status="已下市"),
-    ]).sort_values("stock_id").reset_index(drop=True)
-    return uni
+        cur[["stock_id", "stock_name", "listed_date"]].assign(status="上市中", delisted_date=pd.NaT),
+        gone[["stock_id", "stock_name", "delisted_date"]].assign(status="已下市", listed_date=pd.NaT),
+    ])[["stock_id", "stock_name", "status", "listed_date", "delisted_date"]]
+    return uni.sort_values("stock_id").reset_index(drop=True)
 
 
 # ───────────── 抓資料（自動等待額度） ─────────────
@@ -284,6 +346,7 @@ def main():
     ap.add_argument("--limit", type=int, help="只處理前 N 檔股票（試跑用）")
     ap.add_argument("--merge", action="store_true", help="不抓資料，只合併已抓的小檔")
     ap.add_argument("--status", action="store_true", help="不抓資料，只顯示目前進度")
+    ap.add_argument("--refresh-twse", action="store_true", help="重新下載證交所上市與終止上市清單")
     args = ap.parse_args()
 
     RAW_DIR.mkdir(parents=True, exist_ok=True)
@@ -294,7 +357,7 @@ def main():
         merge_parts()
         return
 
-    uni = get_universe()
+    uni = get_universe(args.refresh_twse)
     uni.to_csv(RAW_DIR / "universe.csv", index=False, encoding="utf-8-sig")
     stocks = list(uni["stock_id"])[: args.limit] if args.limit else list(uni["stock_id"])
     STATE.update(

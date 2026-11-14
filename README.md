@@ -100,21 +100,21 @@
 - [x] 用「每日股價＋除權息結果」自行計算 5 年含息報酬（免費 API 不提供還原股價）
 - [x] 台積電 4 季 EPS 與收盤價，與券商 App 核對 5/5 一致；另以 Yahoo 股市核對 4 季 EPS、3 個月營收、收盤價，8/8 一致（[`results/tsmc_crosscheck.csv`](results/tsmc_crosscheck.csv)）
 - [x] 系統設計文件（`DESIGN.md`）與規劃中程式的骨架
-- [x] 全市場資料收集（[`collect_data.py`](collect_data.py)）：1,322 檔（含 2012 年後下市）× 7 種資料，9,256 個任務 0 失敗；可中斷接續、自動等待 API 額度。結果見 [`results/collect_summary.md`](results/collect_summary.md)
+- [x] 全市場資料收集（[`collect_data.py`](collect_data.py)）：1,322 檔（含 2012 年後下市）× 7 種資料，9,256 個任務 0 失敗；之後補抓減資、分割參考價，以及延伸用的外資持股與三大法人買賣超，共 11 種，皆 0 失敗；2026-11-12 研究範圍改用證交所上市清單與終止上市名單，為 1,171 家（現在上市 1,089、2012 年後終止上市 82）；可中斷接續、自動等待 API 額度。結果見 [`results/collect_summary.md`](results/collect_summary.md)
 - [x] 資料管線 Demo 網頁：示範特徵、5 年含息報酬與營收成長的計算（有全市場資料就用全市場，否則用 30 檔抽樣）（[`app.py`](app.py)、[`demo_pipeline.py`](demo_pipeline.py)），見下方 [Demo 網頁](#demo-網頁)
 
 ### 規劃中：核心目標（必定完成）
 
-- [ ] Point-in-Time「公司 × 年份」資料集：主要標記（報酬前 5%＋營收成長）、對照標記（`build_dataset.py`）
+- [x] Point-in-Time「公司 × 年份」資料集：主要標記（報酬前 5%＋營收成長）、對照標記（[`build_dataset.py`](build_dataset.py)）：2013–2020 年 6,193 列，`y_main` 正例 190 筆（各年 2.1%～3.9%）；各年統計見 [`results/dataset_summary.csv`](results/dataset_summary.csv)
 - [ ] LightGBM 與邏輯迴歸，三輪 walk-forward（`train.py`）
 - [ ] 實驗 E1、E2、E3（`evaluate.py`）
-- [ ] 2 條領域規則（盈餘品質、估值過高），附固定說明與文獻出處（`rules.py`、`knowledge/`）
+- [x] 2 條領域規則（盈餘品質、估值過高），附固定說明與文獻出處（[`rules.py`](rules.py)、[`knowledge/`](knowledge/)）：Sloan (1996)、Lakonishok et al. (1994)，門檻只用訓練特徵年計算（[`results/rule_thresholds.csv`](results/rule_thresholds.csv)）
 - [ ] LLM Agent：SHAP、相似案例、報告生成與數字核對；E4 數字正確率（`agent.py`）
-- [ ] Streamlit 個股分析頁（`app.py`）
+- [ ] Streamlit 個股分析頁（`app.py`）：骨架已完成（[`analysis_page.py`](analysis_page.py)，分頁④；模型相關區塊先用標示清楚的假資料）
 
 ### 規劃中：延伸目標（視時程加入）
 
-- [ ] 基本面確認加入 EPS 條件
+- [x] 基本面確認加入 EPS 條件（另存為 `y_main_eps`；幾乎不篩選，主要標記仍只用營收，見 DESIGN 11.4）
 - [ ] E4 使用者人工評分、E5 敏感度分析
 - [ ] 網站全市場篩選頁、回測成果頁，部署至 Streamlit Community Cloud
 
@@ -236,13 +236,14 @@ streamlit run app.py       # 瀏覽器開啟 http://localhost:8501（全市場�
 ├── verify_data.py            # 已完成：資料可行性驗證
 ├── demo_pipeline.py          # 已完成：Demo 用的 Point-in-Time 計算（全市場或 30 檔抽樣）
 ├── collect_data.py           # 已完成：全市場資料收集（可中斷接續）
-├── build_dataset.py          # 規劃中：Point-in-Time 特徵與標記資料表
+├── build_dataset.py          # Point-in-Time 特徵與標記資料表（→ data/dataset.parquet）
 ├── train.py                  # 規劃中：LightGBM 與邏輯迴歸訓練
 ├── evaluate.py               # 規劃中：walk-forward 回測與 Baseline 比較
-├── rules.py                  # 規劃中：領域規則檢查
+├── rules.py                  # 領域規則檢查（盈餘品質、估值過高）
 ├── agent.py                  # 規劃中：LLM Agent
-├── app.py                    # Streamlit 網站（目前為資料管線 Demo；個股分析頁規劃中）
-├── knowledge/                # 規劃中：規則說明與文獻出處
+├── app.py                    # Streamlit 網站（資料管線 Demo＋個股分析頁骨架）
+├── analysis_page.py          # 個股分析頁骨架（F1–F4；模型相關先用假資料）
+├── knowledge/                # 規則說明與文獻出處
 │   └── README.md
 ├── results/                  # 驗證結果、Demo 截圖；實驗結果規劃中
 │   ├── README.md
@@ -252,6 +253,15 @@ streamlit run app.py       # 瀏覽器開啟 http://localhost:8501（全市場�
 ```
 
 ---
+
+## 主要參考文獻
+
+完整清單與編號見 [DESIGN.md 參考文獻](DESIGN.md#參考文獻)；每篇在專題中的用途與讀到的結論見 [`knowledge/`](knowledge/)。
+
+- 多倍股與長期報酬：Yartseva (2025)；Bessembinder et al. (2023, *FAJ*)；Bessembinder (2020, Extreme Stock Market Performers Part IV)
+- 特徵的近年與台股依據：Jensen, Kelly & Pedersen (2023, *JF*)；Bui et al. (2023, *Pacific-Basin Finance Journal*)；Gu, Kelly & Xiu (2020, *RFS*)
+- 領域規則：Sloan (1996, *The Accounting Review*)；Lakonishok, Shleifer & Vishny (1994, *JF*)
+- Agent 設計：Chen et al. (2023, Program of Thoughts)；He et al. (2025, Chronologically Consistent LLMs)
 
 ## 組員與分工
 

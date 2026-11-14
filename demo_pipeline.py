@@ -10,7 +10,8 @@ demo_pipeline.py －Demo 用的 Point-in-Time 計算（只讀本機資料，不�
      零分母、負權益、不適用時記為缺值並保留原因，不硬算
   3. t → t + 5 年含息報酬（DESIGN 5.4）：每日股價＋公司行動因子（除權息、減資、分割）自行計算，
      終點取最後 20 個交易日（約一個月）含息財富序列的平均；同期 0050 一起算作對照
-     市值的股數 ＝ 年底股本 ÷ 10，再修正年底後至特徵日間的減資與所有分割／面額變更
+     市值的股數 ＝ 特徵日的發行股數（TaiwanStockShareholding，2026-11-14 起）；
+     特徵日前 30 天內沒有發行股數時，退回「年底股本 ÷ 10，再修正年底後的減資與分割」
   4. 營收 CAGR：第 y − 1 年 → 第 y + 4 年全年營收；期初須為正、5 年資料齊全，
      期間下市不滿 5 年記為 UNKNOWN
   5. 樣本範圍＝上市：特徵日時仍在興櫃（價格不在升降單位上）的公司 × 年不納入（上櫃轉上市無法用價格區分，列為限制）
@@ -334,6 +335,21 @@ def price_jumps(ws, stock_id=None):
     return [d.strftime("%Y-%m-%d") for d in bad.index]
 
 
+def issued_shares(stock_id, t):
+    """特徵日 t（含）以前最後一筆發行股數（TaiwanStockShareholding，證交所每日公布）。
+
+    超過 MAX_STALE_DAYS 天沒有更新（例如資料中斷多年）回傳 (None, None)，由呼叫端退回股本推估。
+    發行股數已反映增資、減資、分割，不需要再修正；少數公司（例如 2002）含上市特別股，列為限制。
+    """
+    sh = load("TaiwanStockShareholding", stock_id)
+    if sh.empty:
+        return None, None
+    sh = sh[(sh["date"] <= t) & (sh["NumberOfSharesIssued"] > 0)].sort_values("date")
+    if sh.empty or (t - sh["date"].iloc[-1]).days > MAX_STALE_DAYS:
+        return None, None
+    return sh["date"].iloc[-1], float(sh["NumberOfSharesIssued"].iloc[-1])
+
+
 def start_price(stock_id, t):
     """特徵日 t（含）以前最後一筆收盤價；若距 t 超過 MAX_STALE_DAYS 天，視為當時未在交易。"""
     p = price_series(stock_id)
@@ -348,7 +364,7 @@ def five_year_return(stock_id, year):
 
     status：
       OK          ＝ 可靠
-      下市暫估     ＝ 期間停止交易，以最後交易日價格暫估（不可靠，不參與判定）
+      下市暫估     ＝ 期間停止交易，以最後交易日價格暫估並標記（仍參與報酬排名，DESIGN 5.4、第 12 節）
       價格異常     ＝ 含息財富單日變動超過漲跌幅限制（長期停牌重整、資料錯誤等），報酬不可靠
       未在交易     ＝ 特徵日時沒有成交資料
     """
@@ -497,22 +513,27 @@ def compute_features(stock_id, year):
     cf_src = f"現金流量表 {fy} 年全年累計（12-31）"
     feats = {}
 
-    # 股價與股數 → 市值
+    # 股價與股數 → 市值（股數優先用特徵日的發行股數，沒有才退回股本推估；DESIGN 5.3）
     d_t, p_t = start_price(stock_id, t)
-    shares_cap, shares_type = statement_value("TaiwanStockBalanceSheet", stock_id, fy_end, ["OrdinaryShare", "CapitalStock"])
     price_src = f"每日股價 {d_t:%Y-%m-%d} 收盤" if d_t is not None else "每日股價"
+    d_sh, issued = issued_shares(stock_id, t)
     if p_t is None:
-        mcap, why = None, "特徵日前 30 天內無成交"
-    elif shares_cap is None or shares_cap <= 0:
-        mcap, why = None, f"{fy} 年底資產負債表無股本"
+        mcap, why, formula, src = None, "特徵日前 30 天內無成交", "股價 × 發行股數", price_src
+    elif issued is not None:
+        mcap, why = p_t * issued, ""
+        formula, src = "股價 × 特徵日的發行股數", f"{price_src}＋外資持股表 {d_sh:%Y-%m-%d} 發行股數"
     else:
-        mult, adj_note = share_multiplier(stock_id, fy_end, t)
-        mcap, why = p_t * shares_cap / FACE_VALUE * mult, ""
-        if adj_note:
-            price_src += f"（{adj_note}）"
-    feats["市值（億元）"] = _feat(mcap / 1e8 if mcap else None,
-                                f"股價 × 股本 ÷ 面額 {FACE_VALUE} 元（年底後的減資、分割修正股數）",
-                                f"{price_src}＋{bs_src} 股本", f"股價：特徵日；股本：{annual_deadline}", why)
+        shares_cap, _ = statement_value("TaiwanStockBalanceSheet", stock_id, fy_end, ["OrdinaryShare", "CapitalStock"])
+        formula = f"（無發行股數，退回推估）股價 × 股本 ÷ 面額 {FACE_VALUE} 元（年底後的減資、分割修正股數）"
+        src = f"{price_src}＋{bs_src} 股本"
+        if shares_cap is None or shares_cap <= 0:
+            mcap, why = None, f"特徵日前 {MAX_STALE_DAYS} 天內無發行股數，{fy} 年底資產負債表也無股本"
+        else:
+            mult, adj_note = share_multiplier(stock_id, fy_end, t)
+            mcap, why = p_t * shares_cap / FACE_VALUE * mult, ""
+            if adj_note:
+                src += f"（{adj_note}）"
+    feats["市值（億元）"] = _feat(mcap / 1e8 if mcap else None, formula, src, "股價、發行股數：特徵日", why)
 
     # FCF 殖利率
     cfo, _ = statement_value("TaiwanStockCashFlowsStatement", stock_id, fy_end, CFO_TYPES)

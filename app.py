@@ -7,6 +7,7 @@ app.py －Streamlit 網站（目前為資料管線 Demo）
   1. 我們要找什麼樣的股票：白話說明主要標記，自動挑出三種例子
   2. 時光機：選股票與特徵年，看當時可用的 10 項特徵與 5 年後的結果
   3. 總表：每檔每年一列，可排序
+  4. 個股分析（骨架，analysis_page.py）：F1–F4 版面；特徵、規則、基準率為真資料，模型分數等標示假資料
 
 之後規劃加入的頁面（見 DESIGN.md）：
   - 個股分析：輸入股票代號與分析日期，顯示 Agent 報告、相似案例卡片，可追問
@@ -17,13 +18,13 @@ app.py －Streamlit 網站（目前為資料管線 Demo）
 
 輸入：使用者操作
 輸出：網頁
-負責：許雁婷
 """
 
 import altair as alt
 import pandas as pd
 import streamlit as st
 
+import analysis_page
 import demo_pipeline as dp
 
 DISCLAIMER = ("資料管線雛形：示範特徵與 5 年結果的計算，非模型預測，也不是選股建議。"
@@ -201,7 +202,7 @@ def section_time_machine(table):
         "來源資料": st.column_config.TextColumn(width="large"),
         "缺值原因": st.column_config.TextColumn(width="medium"),
     })
-    st.caption(f"產業類別取 TaiwanStockInfo 現況分類（非當年分類）；股數以股本 ÷ 面額 {dp.FACE_VALUE} 元推估。")
+    st.caption(f"產業類別取 TaiwanStockInfo 現況分類（非當年分類）；股數取特徵日的發行股數，沒有資料時才以股本 ÷ 面額 {dp.FACE_VALUE} 元推估。")
 
     st.markdown(f"##### 5 年後的結果（{a['t']:%Y-%m-%d} → {dp.horizon_end(y):%Y-%m-%d}）")
     ret, bm = a["ret"], a["bm"]
@@ -267,13 +268,15 @@ def main():
                  f"`{dp.FETCH_BENCHMARK_CMD}`")
         st.stop()
     table = get_table()
-    tab1, tab2, tab3 = st.tabs(["① 我們要找什麼樣的股票", "② 時光機", "③ 總表"])
+    tab1, tab2, tab3, tab4 = st.tabs(["① 我們要找什麼樣的股票", "② 時光機", "③ 總表", "④ 個股分析（骨架）"])
     with tab1:
         section_target(table)
     with tab2:
         section_time_machine(table)
     with tab3:
         section_table(table)
+    with tab4:
+        analysis_page.section_analysis()
     st.divider()
     st.caption(dp.DATA_ATTRIBUTION + "原始資料只存在本機，不隨專案上傳。")
 
