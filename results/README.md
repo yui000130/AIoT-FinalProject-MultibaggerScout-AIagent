@@ -1,6 +1,6 @@
-# results/ －實驗結果（規劃中）
+# results/ －驗證與實驗結果
 
-這個資料夾之後會放 `evaluate.py` 與 `agent.py` 產生的實驗結果。**目前已有實驗 E1–E3 的結果**（`e1_*`、`e2_portfolio.csv`、`e3_*`）；E4 尚未完成。
+這個資料夾放資料驗證、`train.py`、`evaluate.py` 與（之後）`agent.py` 產生的彙總結果。**目前已有實驗 E1–E3 的結果**（`e1_*`、`e2_portfolio.csv`、`e3_*`）；E4 尚未完成。
 
 ## 已放入的檔案
 
@@ -50,10 +50,9 @@
 
 | 實驗 | 預計檔案 | 內容 |
 |---|---|---|
-| E1 | `e1_ranking_metrics.csv` | 各模型與 Baseline（含重複隨機（1,000 次））的 Precision@20/50、Recall@50、PR-AUC |
-| E2 | `e2_portfolio.csv`、`e2_portfolio.png` | 前 50 檔等權組合 vs 0050 的累積報酬與最大回撤 |
-| E3 | `e3_shap_ranking.csv`、`e3_shap.png` | SHAP 特徵排名；主要正例、高報酬但未過成長門檻、其餘可判定者三組的特徵中位數與命中率，另按是否下市分層 |
 | E4 | `e4_agent_eval.csv` | Agent 報告 vs 單純 LLM 的數字正確率、證據引用率；（延伸）使用者評分 |
-| E5 | `e5_sensitivity.csv` | （延伸）觀察期 3 年 vs 5 年、主要 vs 對照標記、營收門檻 5% / 10% / 15% 的 Precision@50 比較 |
+| E5 | `e5_sensitivity.csv` | （延伸）觀察期 3 年 vs 5 年、主要 vs 對照標記、營收門檻 5% / 10% / 15%、結束價 5 / 20 / 60 日的 Precision@50 比較 |
+
+E1–E3 已完成，檔案見上方表格（目前只有 csv，尚未製圖）。
 
 每次更新結果時，請同步更新 `DESIGN.md` 第 11 節與 Change Log。

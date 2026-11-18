@@ -247,7 +247,7 @@ streamlit run app.py       # 瀏覽器開啟 http://localhost:8501（全市場�
 ├── analysis_page.py          # 個股分析頁骨架（F1–F4；模型相關先用假資料）
 ├── knowledge/                # 規則說明與文獻出處
 │   └── README.md
-├── results/                  # 驗證結果、Demo 截圖；實驗結果規劃中
+├── results/                  # 驗證結果、Demo 截圖、訓練筆數與實驗 E1–E3 結果
 │   ├── README.md
 │   └── demo/                 # Demo 網頁截圖
 ├── cache/                    # 執行後產生：API 回應快取（不上傳）
