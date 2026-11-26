@@ -92,7 +92,7 @@
 
 ---
 
-## 專題狀態：提案階段
+## 專題狀態：核心目標已完成（2026-11-26）
 
 ### 已完成
 
@@ -103,10 +103,10 @@
 - [x] 全市場資料收集（[`collect_data.py`](collect_data.py)）：1,322 檔（含 2012 年後下市）× 7 種資料，9,256 個任務 0 失敗；之後補抓減資、分割參考價，以及延伸用的外資持股與三大法人買賣超，共 11 種，皆 0 失敗；2026-11-12 研究範圍改用證交所上市清單與終止上市名單，為 1,171 家（現在上市 1,089、2012 年後終止上市 82）；可中斷接續、自動等待 API 額度。結果見 [`results/collect_summary.md`](results/collect_summary.md)
 - [x] 資料管線 Demo 網頁：示範特徵、5 年含息報酬與營收成長的計算（有全市場資料就用全市場，否則用 30 檔抽樣）（[`app.py`](app.py)、[`demo_pipeline.py`](demo_pipeline.py)），見下方 [Demo 網頁](#demo-網頁)
 
-### 規劃中：核心目標（必定完成）
+### 核心目標（全部完成）
 
 - [x] Point-in-Time「公司 × 年份」資料集：主要標記（報酬前 5%＋營收成長）、對照標記（[`build_dataset.py`](build_dataset.py)）：2013–2020 年 6,193 列，`y_main` 正例 190 筆（各年 2.1%～3.9%）；各年統計見 [`results/dataset_summary.csv`](results/dataset_summary.csv)
-- [x] LightGBM 與邏輯迴歸，三輪 walk-forward（[`train.py`](train.py)）：參數事先固定，含時間一致性 assert；訓練正例 17 / 41 / 57 筆，各輪筆數見 [`results/train_summary.csv`](results/train_summary.csv)（尚未評估，指標待 `evaluate.py`）
+- [x] LightGBM 與邏輯迴歸，三輪 walk-forward（[`train.py`](train.py)）：參數事先固定，含時間一致性 assert；訓練正例 17 / 41 / 57 筆，各輪筆數見 [`results/train_summary.csv`](results/train_summary.csv)（評估見下方 E1–E3）
 - [x] 實驗 E1 排序品質（[`evaluate.py`](evaluate.py)）：LightGBM、邏輯迴歸、隨機 1,000 次、低 P/B、高 ROE、Yartseva 啟發規則；結果見 [`results/e1_ranking.csv`](results/e1_ranking.csv) 與 DESIGN 11.5
 - [x] 實驗 E2 組合表現（[`evaluate.py`](evaluate.py)）：每輪前 50 檔等權買進持有 vs 0050、隨機 50 檔（毛報酬，未計交易成本）；結果見 [`results/e2_portfolio.csv`](results/e2_portfolio.csv) 與 DESIGN 11.5
 - [x] 實驗 E3 特徵關聯（[`evaluate.py`](evaluate.py)）：五等分正例率與 8 年穩定性、三組中位數（依下市分層）、LightGBM SHAP；結果見 `results/e3_*.csv` 與 DESIGN 11.5
@@ -115,7 +115,7 @@
 - [x] 實驗 E4 報告品質（[`evaluate.py`](evaluate.py)）：Agent vs 直接 LLM，90 個樣本 × 3 次；數字正確率 Agent 1.000、直接 LLM 0.623（差 +0.377，95% 信賴區間 0.359～0.397），Agent 模板退回率 10.4%；結果見 [`results/e4_summary.csv`](results/e4_summary.csv) 與 DESIGN 11.5
 - [x] Streamlit 個股分析頁（[`analysis_page.py`](analysis_page.py)，`app.py` 分頁④）：F1–F4 皆為真資料；分析日 2018–2026 可評分（2021 年起為上線版模型，無測試結果）
 
-### 規劃中：延伸目標（視時程加入）
+### 延伸目標（視時程加入）
 
 - [x] 基本面確認加入 EPS 條件（另存為 `y_main_eps`；幾乎不篩選，主要標記仍只用營收，見 DESIGN 11.4）
 - [ ] E4 使用者人工評分、E5 敏感度分析
