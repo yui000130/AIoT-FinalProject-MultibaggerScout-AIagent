@@ -1,0 +1,35 @@
+schema: spec-driven
+
+context: |
+  Target: Academic conference paper for ICEIB 2027 (7th International Conference
+  on Electronic Communications, Internet of Things and Big Data), following IEEE
+  conference style (`IEEEtran`, 4-8 pages, English, `paper/main.tex`).
+
+  Required Paper Sections:
+  1. Abstract (A-F: Attention Getter, But, Cure, Development, Experiments, Findings)
+  2. Introduction (G-L: General, However, In literature, Judgement, Keypoint, List the organization)
+  3. Related Work (M-O: Methods, New proposed, Organize as a 4x5 comparison matrix)
+  4. Proposed Design (PA-PM: Aim, Based on/Benefit, Cure/Cause, Design, Paper elements,
+     Formulation, Graph, How, Implementation/Algorithms, Jump to an example walk-through,
+     Key points, Later simulation link, Math proof/definitions)
+  5. Experiment (Q-V: Quality/Quantity metrics, Related methods to compare, Simulation
+     Setup, Tuning parameters, Useful results, Verify effectiveness)
+  6. Conclusion (W-Z: What proposed, eXcel/strengths, Yields, Zen/limitations & future work)
+  7. References (IEEE numbered citations)
+
+  Writing & Verification Constraints:
+  - Follow the A-to-Z SOP checklist in `專題設計規範檢核.md` and cite verified
+    sources from `Multibagger Scout A–F 最新研究證據補強.md`.
+  - Never fabricate experimental numbers. Every method detail and result must
+    match `DESIGN.md` (currently v0.8) and the files in `results/` at the root
+    of this repository; E1-E4 and E5 (label sensitivity) are complete.
+  - Keep LaTeX compatible with Overleaf (`pdflatex` + `IEEEtran`).
+
+rules:
+  proposal:
+    - Map every proposed paper change to specific A-to-Z checklist items (A-Z).
+    - Explicitly state which sections of `paper/main.tex` are affected.
+  specs:
+    - Express each section requirement with verifiable A-to-Z structural criteria.
+  tasks:
+    - Break edits into section-level tasks and include Overleaf LaTeX compile verification.

@@ -1,0 +1,394 @@
+\documentclass[conference]{IEEEtran}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,amsfonts}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{tabularx}
+\usepackage{url}
+\usepackage[hidelinks]{hyperref}
+
+% Based on DESIGN.md v0.8 (2026-11-26) and the actual results in results/
+% of this repository (paper moved here from AIoT-DIC4 on 2026-11-26).
+% A-Z SOP mapping: Abstract A-F, Introduction G-L, Related Work M-O,
+% Proposed Design PA-PM, Experiments Q-V, Conclusion W-Z.
+
+\begin{document}
+
+\title{Multibagger Scout: A Point-in-Time AI Agent with Program-of-Thoughts Verification for Long-Horizon Equity Ranking in the Taiwan Stock Market}
+
+\author{
+\IEEEauthorblockN{Yan-Ting Hsu, Yi-An Chen, and Ya-Jhu You}
+\IEEEauthorblockA{Department of Computer Science and Engineering, National Chung Hsing University, Taichung, Taiwan}
+}
+
+\maketitle
+
+% ---------------- Abstract (A-F) ----------------
+\begin{abstract}
+% A: Attention getter
+Long-term shareholder wealth is created by a small fraction of listed firms~\cite{b2,b1}, and retail participation in Taiwan has reached a record 14.8 million brokerage accounts~\cite{b11}.
+% B: But
+Identifying such firms \emph{ex ante} is hard: most active funds fail to persist~\cite{b3}, backtests that omit delisted firms or use not-yet-published filings overstate performance, and large language models (LLMs) both recall future information~\cite{b5,b6,b7} and make arithmetic errors on financial data~\cite{b8}.
+% C: Cure
+We present \textbf{Multibagger Scout}, a point-in-time (PiT) research agent that ranks the five-year potential of Taiwan Stock Exchange (TWSE) common stocks and explains each ranking with verifiable evidence.
+% D: Development
+Following Program of Thoughts (PoT)~\cite{b4}, every number is computed by fixed tools---ten prior-year fundamental and price features, a LightGBM score, TreeSHAP attributions, resolved $k$-nearest-neighbour cases and two literature-based red-flag rules---while the LLM only writes the report, which a programmatic verifier checks for up to three rounds before falling back to a template.
+% E: Experiments
+On a delisting-inclusive panel of 6,193 firm-years (2013--2020, 1,171 firms) with three walk-forward test years (2018--2020), we evaluate ranking quality against 1,000 random rankings and factor rules (E1), top-50 portfolios against the 0050 ETF (E2), feature associations (E3), report accuracy against a direct-LLM baseline over 540 reports (E4), and sensitivity to the label definition (E5).
+% F: Findings
+LightGBM exceeds the 95th percentile of random PR-AUC in two of three rounds (0.082 and 0.081 vs.\ base rates of 3.9\% and 3.5\%), while logistic regression, low P/B, high ROE and a Yartseva-inspired rule never do; ranking skill is therefore real but unstable. The agent's reports are numerically correct in 100\% of checked figures versus 62.3\% for a direct LLM given the same raw data (difference $+37.7$ points, 95\% CI 35.9--39.7), at the cost of a 10.4\% template-fallback rate. The system is a research prototype and not investment advice.
+\end{abstract}
+
+\begin{IEEEkeywords}
+Point-in-time evaluation, AI agent, Program of Thoughts, survivorship bias, LightGBM, SHAP, numerical verification, Taiwan stock market
+\end{IEEEkeywords}
+
+% ---------------- Introduction (G-L) ----------------
+\section{Introduction}
+
+\subsection{Background (G)}
+Long-horizon stock returns are extremely skewed. Across 64,000 global stocks, most firms fail to beat one-month Treasury bills over their lifetimes, and net wealth creation is concentrated in a few percent of firms~\cite{b2}; a century-long U.S.\ update reports that only 46 of 29,754 stocks account for half of net shareholder wealth~\cite{b1}. Taiwan shows the same concentration and a rapidly growing retail base, with cumulative brokerage accounts reaching 14.8 million in October 2026~\cite{b11}. Tools that help investors and finance students study \emph{which observable characteristics precede long-term winners} are therefore of practical and educational value.
+
+\subsection{Challenges (H)}
+Four obstacles make such tools unreliable:
+\begin{enumerate}
+\item \textbf{Rarity and persistence.} Winners are rare, and professional selection rarely persists; S\&P's persistence scorecard reports that almost no top-quartile U.S.\ large-cap fund stays in the top quartile over five years~\cite{b3}.
+\item \textbf{Look-ahead and survivorship bias.} Backtests often use financial statements that were not yet published at the decision date, or only firms that still exist today.
+\item \textbf{Black-box models.} Machine-learning rankers can predict~\cite{b9} but rarely explain an individual ranking in terms an investor can check.
+\item \textbf{LLM leakage and arithmetic errors.} LLMs can recall information after the analysis date~\cite{b5,b6,b7} and are unreliable calculators on tabular financial data~\cite{b8}.
+\end{enumerate}
+
+\subsection{Literature and Judgement (I, J)}
+Prior work moves from factor studies of extreme winners~\cite{b10,b12} to machine-learning asset pricing~\cite{b9,b14} and LLM agents for finance~\cite{b13}. Two gaps remain. First, characteristics of \emph{ex-post} winners, such as the seven traits of U.S.\ ten-baggers in Yartseva~\cite{b10}, are conditional on success and do not by themselves establish \emph{ex-ante} ranking ability over a full market. Second, LLM agents that generate their own numbers cannot guarantee that a report's figures match the data available at the analysis date.
+
+\subsection{Research Questions and Contributions (K)}
+\begin{itemize}
+\item \textbf{RQ1:} Under strict PiT rules and delisting-inclusive samples, does a tabular model rank five-year, fundamentally confirmed winners better than random and simple factor rules?
+\item \textbf{RQ2:} Which features are associated with such winners, and are these associations stable across years?
+\item \textbf{RQ3:} Does computing every number with tools and verifying the report make LLM-written analyses more reliable than asking an LLM to compute from raw data?
+\end{itemize}
+Our contributions are: (1) a reproducible PiT panel of TWSE firm-years that includes delisted firms and treats unresolvable labels as \texttt{UNKNOWN} rather than negatives; (2) a pre-registered walk-forward comparison of LightGBM, logistic regression and factor rules against a 1,000-draw random benchmark; and (3) a PoT-style agent whose reports cite evidence identifiers and pass a programmatic verifier, with a controlled comparison against a direct-LLM baseline.
+
+\subsection{Organization (L)}
+Section~\ref{sec:related} reviews related work and summarizes it in a comparison matrix. Section~\ref{sec:method} formalizes the labels and PiT constraints, describes the agent architecture and algorithms, and walks through a real query. Section~\ref{sec:exp} reports the experimental setup and results of E1--E5. Section~\ref{sec:conclusion} concludes with limitations and future work.
+
+% ---------------- Related Work (M-O) ----------------
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Methods (M)}
+\textbf{Factor studies of extreme winners.} Bessembinder et al.~\cite{b2} document the concentration of long-term wealth creation. Yartseva~\cite{b10} studies 464 U.S.\ stocks that rose at least tenfold (2009--2024) and finds that small size, high book-to-market, positive profitability, strong free-cash-flow (FCF) yield and entry near 12-month lows are associated with larger subsequent returns; the paper explicitly leaves a screening rule to future work. Classic anomalies supply interpretable warning signals: high accruals predict weaker earnings persistence~\cite{b15}, and glamour stocks with extreme valuations tend to disappoint~\cite{b16}.
+
+\textbf{Machine learning for cross-sectional returns.} Gu, Kelly and Xiu~\cite{b9} show that tree ensembles and neural networks improve return prediction, and that momentum, liquidity and valuation characteristics dominate. In Taiwan, Bui et al.~\cite{b14} find size, book-to-market and leverage significant in portfolio sorts, with momentum important mainly in non-linear models. These studies target short horizons and seldom handle delisted firms or explain individual predictions.
+
+\textbf{LLM agents in finance.} Multi-agent frameworks such as TradingAgents~\cite{b13} let LLM personas debate and trade. LLMs, however, can memorize post-cutoff outcomes~\cite{b6,b7}, motivating chronologically consistent models~\cite{b5}, and benchmarks such as FAITH~\cite{b8} show frequent numerical hallucinations on financial tables.
+
+\textbf{Tool-augmented reasoning.} Program of Thoughts~\cite{b4} separates reasoning from computation by having the model emit programs that an interpreter executes, improving numerical accuracy on financial question answering.
+
+\subsection{New Proposed Direction (N)}
+Multibagger Scout sits at the intersection of these streams: it evaluates a five-year, fundamentally confirmed target on a full delisting-inclusive market, and it applies the PoT principle in a stricter form---fixed, pre-written tools rather than model-generated code---so that every figure in a report can be traced to an evidence record and checked automatically.
+
+\subsection{Comparison Matrix (O)}
+Table~\ref{tab:related} organizes the four streams along five dimensions.
+
+\begin{table*}[t]
+\centering
+\caption{Comparison of Related Approaches (Four Streams $\times$ Five Dimensions)}
+\label{tab:related}
+\begin{tabularx}{\textwidth}{@{}l>{\raggedright}X>{\raggedright}X>{\raggedright}X>{\raggedright}X>{\raggedright\arraybackslash}X@{}}
+\toprule
+\textbf{Stream} & \textbf{Core mechanism} & \textbf{Sample and bias control} & \textbf{Numerical reliability} & \textbf{Interpretability} & \textbf{Key limitation} \\
+\midrule
+Winner factor studies~\cite{b2,b10} & Characteristics of realized winners & Conditioned on ex-post winners & Deterministic formulas & High & No ex-ante ranking test on a full market \\
+Tabular ML~\cite{b9,b14} & Gradient boosting, neural nets on cross-sections & Varies; delisted firms often missing & Deterministic code & Moderate (feature importance) & Short horizons; no per-stock evidence \\
+LLM trading agents~\cite{b13} & Persona debate and direct decisions & Exposed to pre-training leakage~\cite{b6,b7} & LLM-generated numbers & Narrative only & Hallucinated figures~\cite{b8} \\
+Tool-augmented reasoning~\cite{b4} & LLM writes code, interpreter computes & Not addressed & Interpreter-computed & Program trace & Generated code is not domain-checked \\
+\midrule
+\textbf{This work} & \textbf{Fixed tools + LightGBM + verified LLM report} & \textbf{April PiT cutoff, delisted firms, \texttt{UNKNOWN} labels} & \textbf{Evidence IDs + 3-round verifier} & \textbf{SHAP, resolved cases, rules} & \textbf{TWSE only; one LLM; overlapping test windows} \\
+\bottomrule
+\end{tabularx}
+\end{table*}
+
+% ---------------- Proposed Design (PA-PM) ----------------
+\section{Proposed Design: Multibagger Scout}
+\label{sec:method}
+
+\subsection{Aim, Basis and Principle (PA--PC)}
+The aim is to rank TWSE common stocks at each April decision date by their potential to become \emph{fundamentally confirmed} five-year winners, and to justify every ranking with checkable evidence. The design is based on PoT~\cite{b4}: programs compute, the LLM explains. Unlike PoT, the LLM never writes code; it may only cite outputs of whitelisted tools, so a verifier can compare every reported figure with its source.
+
+\subsection{Formal Definitions (PF, PM)}
+\textbf{Decision date and universe.} For feature year $y \in \{2013,\dots,2020\}$, the decision date $t_y$ is the last trading day of April. The universe $\mathcal{U}_y$ contains TWSE common stocks listed for at least one year at $t_y$, including firms that later delist (1,171 firms in total, 82 delisted after 2012), excluding stocks still trading on the emerging board and the 10\% with the lowest average daily trading value in the preceding year.
+
+\textbf{Wealth series and return.} Let $P_{i,d}$ be the close of stock $i$ on day $d$. Each corporate action $k$ (dividend, capital reduction, split) contributes a wealth-preserving factor $f_{i,k} = P^{\text{pre}}_{i,k}/P^{\text{ref}}_{i,k}$ based on the exchange reference price. The wealth series is
+\begin{equation}
+W_{i,d} = \frac{P_{i,d}}{P_{i,t_y}} \prod_{k:\, t_y < d_k \le d} f_{i,k}.
+\end{equation}
+To avoid a single-day end point, the five-year return averages the last 20 trading days $\mathcal{T}^{20}_{y+5}$ before $t_{y+5}$:
+\begin{equation}
+R_{i,y} = \frac{1}{20}\sum_{d \in \mathcal{T}^{20}_{y+5}} W_{i,d} - 1 .
+\end{equation}
+
+\textbf{Labels.} Among the $N_y$ firms with a computable return, the top $\lceil 0.05 N_y \rceil$ by $R_{i,y}$ (ties broken by ticker) receive $y^{\text{raw}}_{i,y}=1$. With annual revenue $S_{i,Y}$, the revenue growth from year $y-1$ (already published at $t_y$) to $y+4$ is
+\begin{equation}
+g_{i,y} = \left(\frac{S_{i,y+4}}{S_{i,y-1}}\right)^{1/5} - 1 .
+\end{equation}
+The main label is
+\begin{equation}
+y^{\text{main}}_{i,y} =
+\begin{cases}
+1 & y^{\text{raw}}_{i,y}=1 \wedge g_{i,y} \ge 0.10,\\
+0 & y^{\text{raw}}_{i,y}=0 \ \text{or}\ g_{i,y} < 0.10,\\
+\texttt{UNKNOWN} & y^{\text{raw}}_{i,y}=1,\ g_{i,y}\ \text{not determinable}.
+\end{cases}
+\end{equation}
+\texttt{UNKNOWN} rows (e.g., delisted within five years, revenue breaks at the 2013 IFRS transition, price anomalies) are excluded from training and evaluation rather than treated as negatives. The positive rate of $y^{\text{main}}$ is 2.1\%--3.9\% per year (190 positives in 6,193 rows).
+
+\textbf{Point-in-time constraint.} Features use only the prior fiscal year's annual report and January--December revenue of year $y-1$ (both legally published before April 30) and prices up to $t_y$:
+\begin{equation}
+\mathbf{x}_{i,y} = \Phi\big(\{D \mid \text{pub}(D) \le t_y\}\big).
+\end{equation}
+A training or case row from year $y'$ may be used at decision year $y$ only if its label is resolved, i.e.,
+\begin{equation}
+y' + 5 \le y .
+\end{equation}
+
+\textbf{Features.} Ten numeric features plus industry: market capitalization, FCF yield, book-to-market, P/E, ROE, gross margin, annual revenue growth, operating cash flow to net income, debt ratio, and trailing 12-month total return. Zero denominators, negative equity and inapplicable industries are kept as missing values with a recorded reason.
+
+\subsection{Architecture and Modules (PD, PE, PG)}
+The system has eight modules: (1) a Streamlit user interface, (2) query input (ticker and analysis date), (3) a Planner that only classifies intent and selects whitelisted tools, (4) FinMind data acquisition, (5) an analytics engine (features, LightGBM score, TreeSHAP, $k$NN cases), (6) domain knowledge (two red-flag rules with fixed literature notes), (7) a decision module (potential level, base rate, pro and con evidence), and (8) output and follow-up questions. Tools are \texttt{get\_features}, \texttt{score\_model}, \texttt{find\_cases}, \texttt{check\_rules}, \texttt{follow\_up} and \texttt{verify\_report}, limited to 12 calls per request. Every tool output is logged as an evidence record with an identifier (\texttt{E001}, \texttt{E002}, \dots), stock, date, value, unit and source.
+
+\textbf{Analytics details.} The potential level is \emph{high} for the top 5\% of model scores among all scored firms in the analysis year, \emph{medium} for 5\%--20\% and \emph{low} otherwise. $k$NN uses Euclidean distance over within-year percentile ranks of the ten features (missing values set to 0.5) and returns the three nearest successes and three nearest failures among resolved rows ($y'+5 \le y$) of other firms. The two rules, with thresholds computed only from training-year feature distributions, are an \emph{earnings-quality red flag} (accruals over average total assets at or above the training 90th percentile~\cite{b15}) and an \emph{overvaluation flag} (book-to-market at or below the 10th percentile, or positive P/E at or above the 90th percentile~\cite{b16}). Rules add evidence but never change the score.
+
+\subsection{Algorithms (PH, PI)}
+Algorithm~\ref{alg:pit} builds the PiT panel and Algorithm~\ref{alg:agent} answers a query.
+
+\begin{algorithm}[t]
+\caption{Point-in-Time Panel Construction}
+\label{alg:pit}
+\small
+\renewcommand{\algorithmicrequire}{\textbf{Input:}}
+\renewcommand{\algorithmicensure}{\textbf{Output:}}
+\begin{algorithmic}[1]
+\REQUIRE Feature years $y=2013,\dots,2020$; FinMind tables; TWSE listing and delisting registers
+\ENSURE Panel $\mathcal{D}=\{(\mathbf{x}_{i,y}, y^{\text{raw}}_{i,y}, y^{\text{main}}_{i,y})\}$
+\FOR{each $y$}
+  \STATE $t_y \leftarrow$ last trading day of April in $y$
+  \STATE $\mathcal{U}_y \leftarrow$ firms listed $\ge 1$ year at $t_y$ (incl.\ later delisted), not on the emerging board
+  \STATE drop the 10\% least liquid firms (trading value before $t_y$)
+  \FOR{each $i \in \mathcal{U}_y$}
+    \STATE $\mathbf{x}_{i,y} \leftarrow$ features from year-$(y{-}1)$ filings and prices $\le t_y$
+    \STATE $R_{i,y} \leftarrow$ Eq.~(2); mark price anomalies and delisting estimates
+    \STATE $g_{i,y} \leftarrow$ Eq.~(3) if five comparable years exist
+  \ENDFOR
+  \STATE $y^{\text{raw}} \leftarrow$ top $\lceil 0.05N_y \rceil$; $y^{\text{main}} \leftarrow$ Eq.~(4)
+\ENDFOR
+\RETURN $\mathcal{D}$
+\end{algorithmic}
+\end{algorithm}
+
+\begin{algorithm}[t]
+\caption{Agent Query with Three-Round Verification}
+\label{alg:agent}
+\small
+\renewcommand{\algorithmicrequire}{\textbf{Input:}}
+\renewcommand{\algorithmicensure}{\textbf{Output:}}
+\begin{algorithmic}[1]
+\REQUIRE query, request date
+\ENSURE verified report or template report
+\STATE intent, stock $\leftarrow$ parse and validate query
+\STATE $t \leftarrow$ latest April trading day $\le$ request date
+\IF{stock not eligible at $t$} \RETURN clarification \ENDIF
+\STATE $E \leftarrow$ execute whitelisted tools as of $t$ (max 12 calls)
+\IF{critical features missing} \RETURN limited report \ENDIF
+\STATE score, SHAP $\leftarrow$ \texttt{score\_model}($E$, model trained on years $\le t-5$)
+\STATE cases $\leftarrow$ \texttt{find\_cases}($E$, labels resolved by $t$)
+\STATE flags $\leftarrow$ \texttt{check\_rules}($E$, training thresholds)
+\STATE $T \leftarrow$ evidence bundle with identifiers
+\FOR{attempt $=1$ \TO 3}
+  \STATE $R \leftarrow$ LLM composes JSON report citing $T$
+  \STATE errors $\leftarrow$ \texttt{verify\_report}($R, T$)
+  \IF{errors $=\emptyset$} \RETURN $R$ \ENDIF
+  \STATE add errors to the revision prompt
+\ENDFOR
+\RETURN template report built from $T$
+\end{algorithmic}
+\end{algorithm}
+
+The verifier checks the ticker, analysis date, potential level and required fields, and requires that every number cite an evidence identifier and equal that evidence after rounding to its display precision; dates and years must also appear in the evidence.
+
+\subsection{Walk-Through of a Real Query (PJ)}
+We replay a cached run for Formosan Polymer (1310) at $t=$ 2018-04-30 (round-1 model trained on 2013 only):
+\begin{enumerate}
+\item \textbf{Tools.} Four tool calls produce 45 evidence records: the ten features (e.g., market cap NT\$11.35B [E001], P/E 10.75 [E004], ROE 14.6\% [E005]), TreeSHAP contributions (debt ratio $-0.63$ [E012], book-to-market $-0.52$ [E013]), the score's rank of 788 among 799 scored firms [E024, E025], hence level \emph{low}, and the training base rate of 2.4\% [E027].
+\item \textbf{Cases and rules.} $k$NN returns three resolved 2013 successes (e.g., 2345 with a five-year return of 516\%) and three failures (e.g., 2374 with $-28\%$) [E028--E039]. Accruals of 5.2\% of assets fall just below the 5.3\% threshold, so neither rule triggers [E040--E045].
+\item \textbf{Verification.} The first LLM draft wrote ``799 firms'', ``rank 788'' and ``0.4$\times$'' without evidence identifiers; the verifier rejected it with these three errors. The second draft cited [E025], [E024] and [E008] and passed.
+\end{enumerate}
+
+\subsection{Key Points and Link to Experiments (PK, PL)}
+All design choices---thresholds, features, model parameters, rules, $k$NN and LLM settings---were fixed in the design document before the corresponding experiment was run and were not tuned on test results. E1--E3 test RQ1--RQ2, E4 tests RQ3, and E5 checks whether the RQ1 answer depends on the label definition.
+
+% ---------------- Experiments (Q-V) ----------------
+\section{Experiments}
+\label{sec:exp}
+
+\subsection{Setup (S)}
+Data come from FinMind (statements, monthly revenue, prices, dividends, capital reductions, splits, shares outstanding) and the TWSE listing and delisting registers. The panel has 6,193 firm-years. Because a training label needs five years to resolve, the walk-forward rounds are:
+\begin{itemize}
+\item Round 1: train 2013 (700 rows, 17 positives) $\rightarrow$ test 2018;
+\item Round 2: train 2013--2014 (1,422, 41) $\rightarrow$ test 2019;
+\item Round 3: train 2013--2015 (2,173, 57) $\rightarrow$ test 2020.
+\end{itemize}
+Test years have 796, 813 and 831 evaluable firms with 31, 22 and 29 positives. The five-year test windows overlap, so results are reported per round rather than as independent replications. Assertions in code stop training if any training label resolves after the test date.
+
+\subsection{Parameters (T)}
+With only 17 positives in round 1 there is not enough earlier data for time-ordered validation, so parameters were fixed in advance and never tuned (Table~\ref{tab:params}).
+
+\begin{table}[t]
+\centering
+\caption{Fixed Model Settings (No Tuning on Any Test Year)}
+\label{tab:params}
+\small
+\begin{tabularx}{\columnwidth}{@{}l>{\raggedright\arraybackslash}X@{}}
+\toprule
+Component & Setting and rationale \\
+\midrule
+LightGBM & 200 trees, learning rate 0.05, 15 leaves, min.\ 20 samples per leaf, balanced class weights, seed 42; native missing values and industry category \\
+Logistic regression & $C=1.0$, balanced weights; features converted to within-year percentile ranks as in~\cite{b9} to cap extreme ratios, median imputation, industry one-hot \\
+$k$NN cases & 3 successes + 3 failures, percentile-rank Euclidean distance, resolved rows of other firms only \\
+Rules & Training-year 90th/10th percentiles (decile extremes as in~\cite{b15,b16}) \\
+LLM & \texttt{gemini-3.5-flash-lite}, temperature 0, JSON output, cached responses \\
+\bottomrule
+\end{tabularx}
+\end{table}
+
+\subsection{Metrics and Baselines (Q, R)}
+E1 measures Precision@20, Precision@50, Recall@50 and PR-AUC against each round's actual positive rate. Baselines are logistic regression, lowest P/B, highest ROE, a Yartseva-inspired rule (book-to-market $>0.40$ and ROE $>0$, then equal-weighted ranks of small size, high FCF yield, high book-to-market and low past return), and 1,000 random rankings (seed 42). E2 buys the top 50 stocks equally weighted on the next trading day and holds five years (gross of costs; delisted holdings turn into cash) against 0050 and 1,000 random 50-stock portfolios. E3 reports quintile positive rates and SHAP stability. E4 compares the agent with a \emph{direct LLM} that receives the same raw fields and computation definitions but no tools or verifier, on 90 test-year samples (30 per round) $\times$ 3 repetitions. It scores numerical accuracy of 11 key figures against a program-built answer key, required-field coverage and evidence citation rate, with bootstrap 95\% confidence intervals over samples. E5 retrains LightGBM with the same fixed settings for four labels---the return-only top 5\% ($y_{\text{raw}}$) and revenue-CAGR thresholds of 5\%, 10\% (the main label) and 15\%---and compares each with its own 1,000 random rankings, because positive rates differ across labels. E5 was specified before it was run and is not used to choose a label.
+
+\textbf{Pre-specified criteria (V).} A ranking result counts as better than chance only if it exceeds the 95th percentile of the 1,000 random draws; an E4 difference counts only if its bootstrap 95\% CI excludes zero.
+
+\subsection{Results (U)}
+
+\begin{table}[t]
+\centering
+\caption{E1 Ranking Quality (PR-AUC; P@20 / P@50 in Parentheses)}
+\label{tab:e1}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Method & 2018 & 2019 & 2020 \\
+\midrule
+Positive rate & 3.9\% & 2.7\% & 3.5\% \\
+LightGBM & \textbf{0.082} (.05/.02) & 0.035 (.05/.04) & \textbf{0.081} (\textbf{.15}/\textbf{.10}) \\
+Logistic reg. & 0.048 (.00/.02) & 0.031 (.00/.00) & 0.040 (.00/.00) \\
+Low P/B & 0.040 (.05/.04) & 0.023 (.00/.02) & 0.030 (.05/.02) \\
+High ROE & 0.055 (.10/.04) & 0.033 (.05/.02) & 0.046 (.05/.06) \\
+Yartseva-inspired & 0.044 (.05/.04) & 0.030 (.05/.02) & 0.032 (.00/.02) \\
+Random 95th pct. & 0.073 & 0.061 & 0.065 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{E1 (RQ1).} Table~\ref{tab:e1}: bold values exceed the random 95th percentile. LightGBM passes in rounds 1 and 3 on PR-AUC and in round 3 on P@20, P@50 and Recall@50 (0.172); in round 2 all its metrics lie within the random range. Logistic regression and all factor rules stay within the random range in every round. The Yartseva-inspired screen passes about two thirds of firms and has little discriminating power in Taiwan.
+
+\textbf{E2.} Five-year gross returns of the LightGBM top 50 are $+62.9\%$, $+195.8\%$ and $+157.8\%$ versus $+75.3\%$, $+125.8\%$ and $+135.4\%$ for 0050. Only round 3 exceeds the random 95th percentile ($+154.6\%$); maximum drawdowns (32.7\%--38.6\%) are within the random range in all rounds.
+
+\textbf{E3 (RQ2).} Across 2013--2020, the largest quintile gaps in positive rate are for trailing 12-month return (2.4\% $\rightarrow$ 4.4\%) and revenue growth (2.0\% $\rightarrow$ 4.2\%), yet Q5 beats Q1 in only five of eight years. The four Yartseva directions do not carry over: small size and FCF yield show flat profiles, the most \emph{expensive} book-to-market quintile has the highest rate, and recent winners rather than recent losers are more likely to become positives. TreeSHAP is stable across rounds only for trailing return (rank 1), book-to-market and size.
+
+\begin{table}[t]
+\centering
+\caption{E4 Report Quality (90 Samples $\times$ 3 Repetitions per Group)}
+\label{tab:e4}
+\small
+\begin{tabular}{@{}lccc@{}}
+\toprule
+Metric & Agent & Direct LLM & Diff.\ [95\% CI] \\
+\midrule
+Numerical accuracy & 1.000 & 0.623 & $+0.377$ [0.359, 0.397] \\
+Required-field coverage & 1.000 & 0.996 & $+0.004$ [0.000, 0.011] \\
+Evidence citation rate & 1.000 & 0.965 & $+0.035$ [0.026, 0.047] \\
+Rule-flag accuracy$^{\dagger}$ & 1.000 & 0.854 & $+0.146$ [0.106, 0.189] \\
+\midrule
+Template fallback (agent) & \multicolumn{3}{l}{10.4\% of 270 reports (5.6\% / 11.1\% / 14.4\% by round)} \\
+Mean verification rounds & \multicolumn{3}{l}{1.53} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{E4 (RQ3).} Table~\ref{tab:e4}: all 540 reports were completed. $^{\dagger}$Rule-flag accuracy (share of the two red-flag decisions matching the answer key) was not among the pre-specified E4 metrics but is computed from the same answer key; we report it as a supplementary metric. The direct LLM fills almost every field but computes about 38\% of the figures wrongly; the gap is nearly identical in each round (0.376, 0.372, 0.384). The agent's accuracy remains 1.000 when template reports are excluded, so the result is not driven by fallbacks; the price is that 10.4\% of reports fail all three verification rounds, and three samples fall back in all repetitions.
+
+\begin{table}[t]
+\centering
+\caption{E5 Label Sensitivity (LightGBM Retrained per Label; PR-AUC / P@50)}
+\label{tab:e5}
+\small
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+Label & Pos.\ rate & 2018 & 2019 & 2020 \\
+\midrule
+Return top 5\% & 5.0--5.1\% & 0.059 / .04 & 0.070 / .06 & \textbf{0.084} / .10 \\
+CAGR $\geq$ 5\% & 3.9--4.5\% & 0.059 / .06 & 0.047 / .04 & \textbf{0.085} / .08 \\
+CAGR $\geq$ 10\% (main) & 2.7--3.9\% & \textbf{0.082} / .02 & 0.035 / .04 & \textbf{0.081} / \textbf{.10} \\
+CAGR $\geq$ 15\% & 2.0--3.0\% & \textbf{0.095} / \textbf{.08} & 0.026 / .02 & 0.054 / \textbf{.08} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{E5 (label sensitivity).} Table~\ref{tab:e5}: bold values exceed the 95th percentile of random rankings for the same label. With the return-only label or a 5\% revenue threshold, LightGBM beats chance only on round-3 PR-AUC; with 10\% or 15\% thresholds it beats chance in more rounds and metrics. Fundamental features thus rank revenue-confirmed winners better than pure return winners, which supports the fundamentally confirmed label. No threshold is best in all rounds (15\% leads in round 1 but misses round-3 PR-AUC, with only 11 training positives in round 1), so the main label stays at 10\%. Round 2 beats chance under none of the four labels, so its weakness in E1 is not caused by the label definition.
+
+\subsection{Effectiveness and Threats (V)}
+By the pre-specified criteria, RQ3 is answered clearly, whereas RQ1 is answered only partially: LightGBM shows ranking skill in two of three overlapping rounds, a pattern that holds qualitatively across revenue thresholds (E5), with 22--31 positives per round, so one additional hit in the top 20 changes Precision@20 by 0.05. E4 checks only the 11 key figures and rule decisions, not the quality of the prose, and uses one LLM version. Delisted firms lack some financial statements in FinMind, delisting proceeds are approximated by the last trade, and FinMind does not provide restatement history.
+
+% ---------------- Conclusion (W-Z) ----------------
+\section{Conclusion and Future Work}
+\label{sec:conclusion}
+
+\textbf{What we proposed (W).} Multibagger Scout combines a delisting-inclusive point-in-time panel, a fundamentally confirmed five-year label, a pre-registered walk-forward evaluation and a PoT-style agent whose LLM may only cite tool evidence that a verifier checks.
+
+\textbf{Strengths (X).} The separation of computation and language yields reports with no unverified figures (100\% accuracy versus 62.3\% for a direct LLM), and every ranking is accompanied by SHAP attributions, resolved analog cases and literature-based red flags.
+
+\textbf{Yields (Y).} LightGBM beats 1,000 random rankings in two of three test years, simple factor rules and a Yartseva-inspired rule do not, and the U.S.\ ten-bagger characteristics largely fail to transfer to Taiwan; momentum and revenue growth are the most consistent signals. Ranking skill is weaker for a return-only label than for revenue-confirmed labels.
+
+\textbf{Limitations and future work (Z).} Ranking skill is unstable across rounds and rests on few positives; the sample covers only TWSE-listed firms, only one LLM is tested, and portfolio returns are gross of costs. Future work includes sensitivity to a three-year horizon and to the end-price averaging window, human evaluation of report prose, additional PiT features such as foreign ownership, and a market-wide screening interface. \emph{Multibagger Scout is a research prototype and does not constitute investment advice.}
+
+% ---------------- References ----------------
+\begin{thebibliography}{99}
+
+\bibitem{b1} H.~Bessembinder, ``One hundred years in the U.S. stock markets,'' SSRN Working Paper 6438198, 2026.
+
+\bibitem{b2} H.~Bessembinder, T.-F.~Chen, G.~Choi, and K.~C.~J.~Wei, ``Long-term shareholder returns: Evidence from 64,000 global stocks,'' \emph{Financial Analysts Journal}, vol.~79, no.~3, pp.~7--23, 2023.
+
+\bibitem{b3} S\&P Dow Jones Indices, ``U.S. Persistence Scorecard Year-End 2025,'' 2026. [Online]. Available: \url{https://www.spglobal.com/spdji/en/spiva/article/us-persistence-scorecard/}
+
+\bibitem{b4} W.~Chen, X.~Ma, X.~Wang, and W.~W.~Cohen, ``Program of thoughts prompting: Disentangling computation from reasoning for numerical reasoning tasks,'' \emph{Transactions on Machine Learning Research}, 2023, arXiv:2211.12588.
+
+\bibitem{b5} S.~He, L.~Lv, A.~Manela, and J.~Wu, ``Chronologically consistent large language models,'' arXiv:2502.21206, 2025.
+
+\bibitem{b6} Z.~Gao, W.~Jiang, and Y.~Yan, ``A test of lookahead bias in LLM forecasts,'' ABFER Annual Conference, 2026.
+
+\bibitem{b7} A.~Didisheim, M.~Fraschini, and L.~Somoza, ``AI's predictable memory in financial analysis,'' \emph{Economics Letters}, vol.~256, 2025.
+
+\bibitem{b8} ``FAITH: A framework for assessing intrinsic tabular hallucinations in finance,'' arXiv:2508.05201, 2025.
+
+\bibitem{b9} S.~Gu, B.~Kelly, and D.~Xiu, ``Empirical asset pricing via machine learning,'' \emph{The Review of Financial Studies}, vol.~33, no.~5, pp.~2223--2273, 2020.
+
+\bibitem{b10} A.~Yartseva, ``The alchemy of multibagger stocks,'' CAFE Working Paper No.~33, Birmingham City University, 2025.
+
+\bibitem{b11} Central News Agency, ``Taiwan stock market cumulative accounts reach 14.827 million,'' Nov.~2, 2026. [Online]. Available: \url{https://www.cna.com.tw/news/afe/202611020015.aspx}
+
+\bibitem{b12} T.~I.~Jensen, B.~Kelly, and L.~H.~Pedersen, ``Is there a replication crisis in finance?'' \emph{The Journal of Finance}, vol.~78, no.~5, pp.~2465--2518, 2023.
+
+\bibitem{b13} Y.~Xiao, E.~Sun, D.~Luo, and W.~Wang, ``TradingAgents: Multi-agents LLM financial trading framework,'' arXiv:2412.20138, 2024.
+
+\bibitem{b14} D.~G.~Bui, D.-R.~Kong, C.-Y.~Lin, and T.-C.~Lin, ``Momentum in machine learning: Evidence from the Taiwan stock market,'' \emph{Pacific-Basin Finance Journal}, vol.~82, 102178, 2023.
+
+\bibitem{b15} R.~G.~Sloan, ``Do stock prices fully reflect information in accruals and cash flows about future earnings?'' \emph{The Accounting Review}, vol.~71, no.~3, pp.~289--315, 1996.
+
+\bibitem{b16} J.~Lakonishok, A.~Shleifer, and R.~W.~Vishny, ``Contrarian investment, extrapolation, and risk,'' \emph{The Journal of Finance}, vol.~49, no.~5, pp.~1541--1578, 1994.
+
+\end{thebibliography}
+
+\end{document}

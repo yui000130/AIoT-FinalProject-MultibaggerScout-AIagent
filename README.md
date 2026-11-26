@@ -256,6 +256,8 @@ streamlit run app.py       # 瀏覽器開啟 http://localhost:8501（全市場�
 ├── results/                  # 驗證結果、Demo 截圖、訓練筆數與實驗 E1–E3 結果
 │   ├── README.md
 │   └── demo/                 # Demo 網頁截圖
+├── paper/                    # ICEIB 2027 論文（main.tex）、OpenSpec 章節規格、專業摘要；2026-11-26 由 AIoT-DIC4 搬入
+│   └── README.md
 ├── cache/                    # 執行後產生：API 回應快取（不上傳）
 └── output/                   # 執行後產生：驗證結果（不上傳）
 ```
