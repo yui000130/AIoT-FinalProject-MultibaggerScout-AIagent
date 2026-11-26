@@ -25,14 +25,25 @@ E1 方法定義（DESIGN 11.5，執行前固定）：
   - 百分位排名只用測試年同一特徵日的全部樣本特徵（特徵日已公開），不用標記
 
 輸入：data/dataset.parquet、models/scores_round{n}.parquet（train.py）
+  E4：報告品質（Agent vs 直接 LLM，2026-11-24 實作；方法見 DESIGN 11.5 E4 方法定義）
+      三輪測試年各抽 30 家（種子 42，只看代號）× 2 組 × 3 次；同一個 Gemini 模型、temperature 0、同一種 JSON 格式
+      Agent：agent.run_analysis（工具＋核對迴圈）；直接 LLM：取得原始欄位與計算口徑，自行計算，無工具與核對
+      指標：key_figures 11 項的數字正確率（四捨五入到答案表顯示位數後相等，且公司與期間相符）、
+            必要欄位覆蓋率、證據引用率、規則判定正確率、模板退回率；以公司為單位 bootstrap 95% 信賴區間
+      執行：python -c "import evaluate; evaluate.run_e4()"（需 GEMINI_API_KEY；額度用完自動停止，重跑從快取接續）
 輸出：results/e1_ranking.csv（各輪各方法的指標；隨機為 1,000 次平均）
       results/e2_portfolio.csv（各輪組合的 5 年累積含息報酬、最大回撤、下市與異常筆數）
       results/e3_quintile.csv、e3_groups.csv、e3_shap.csv（E3 彙總數字）
       results/e1_random.csv（隨機基準 1,000 次的分布：平均、第 5／50／95 百分位）
+      results/e4_answer_key.csv（E4 答案表：90 家的 11 項數字（顯示位數）與規則判定）
+      results/e4_reports.csv（每家 × 組 × 次的評分）、results/e4_summary.csv（兩組比較與信賴區間）
 
 執行方式：python evaluate.py（需先執行 python train.py）
 """
 
+import json
+import math
+import re
 import sys
 from pathlib import Path
 
@@ -339,6 +350,338 @@ def run_e3():
     for table, path in ((q, E3_QUINTILE_CSV), (g, E3_GROUPS_CSV), (sh, E3_SHAP_CSV)):
         table.round(4).to_csv(path, index=False, encoding="utf-8-sig")
     return q, g, sh
+
+
+# ───────────── E4：報告品質（Agent vs 直接 LLM，DESIGN 11.5 E4 方法定義） ─────────────
+E4_PER_ROUND = 30
+E4_REPS = 3
+E4_N_BOOT = 1000
+E4_KEY_CSV = BASE / "results" / "e4_answer_key.csv"
+E4_REPORTS_CSV = BASE / "results" / "e4_reports.csv"
+E4_SUMMARY_CSV = BASE / "results" / "e4_summary.csv"
+E4_GROUPS = ("Agent", "直接 LLM")
+
+# 答案表的顯示位數（建立答案表時固定，執行 E4 後不再更動）：欄位 → (倍率, 小數位數)
+#   比率以百分比 1 位小數（帳面／市值例外，3 位小數）；市值以億元 1 位小數；倍數 1 位小數
+def e4_display(field):
+    import agent
+    unit = agent.unit_of(field)
+    if unit == "比率":
+        return (1, 3) if "帳面/市值" in field else (100, 1)
+    return (1, 1)
+
+
+def e4_sample():
+    """三輪測試年全部評分樣本中，種子 42 各抽 30 家；只用代號，不看標記與報酬。"""
+    import agent
+    df = agent.labeled()
+    rows = []
+    for n, f in enumerate(train.FOLDS, start=1):
+        ids = df.loc[df["特徵年"] == f["test"], "代號"].sort_values().reset_index(drop=True)
+        for sid in sorted(ids.sample(E4_PER_ROUND, random_state=SEED)):
+            rows.append({"輪次": n, "特徵年": f["test"], "代號": sid})
+    return pd.DataFrame(rows)
+
+
+def e4_answer_key(sample):
+    """程式建立的答案表：11 項數字（10 項特徵＋應計／平均總資產）與 2 條規則判定。"""
+    import agent
+    rows = []
+    for _, s in sample.iterrows():
+        log = agent.EvidenceLog()
+        feats = agent.get_features(s["代號"], s["特徵年"], log)
+        rl = agent.check_rules(s["代號"], s["特徵年"], log)
+        row = {"輪次": s["輪次"], "代號": s["代號"], "名稱": feats["name"], "分析日": str(feats["as_of"])}
+        for f in agent.KEY_FIELDS:
+            row[f] = feats["features"][f]["value"]
+        for r in rl["rules"]:
+            row[f"規則：{r['rule']}"] = agent.STATE[r["triggered"]]
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def e4_raw_inputs(stock_id, year):
+    """直接 LLM 組的輸入：計算 11 項數字與 2 條規則所需的原始欄位（只用特徵日 t 以前已公開的資料）。"""
+    import agent
+    import rules as rl
+    t = dp.feature_date(year)
+    fy = year - 1
+    meta = dp.stock_meta(stock_id)
+    row = agent.find_row(stock_id, year)
+
+    def bs(y, types):
+        return dp.statement_value("TaiwanStockBalanceSheet", stock_id, pd.Timestamp(f"{y}-12-31"), types)[0]
+
+    def inc(types):
+        return dp.annual_income(stock_id, fy, types)[0]
+
+    d1, p1 = dp.start_price(stock_id, t)
+    d0, p0 = dp.start_price(stock_id, t - pd.DateOffset(years=1))
+    p = dp.price_series(stock_id)
+    p = p[(p.index > t - pd.DateOffset(years=1)) & (p.index <= t)]
+    month_end = p.groupby(p.index.to_period("M")).last()
+    events = []
+    if d0 is not None:
+        dv = dp.load("TaiwanStockDividendResult", stock_id)
+        if not dv.empty:
+            dv = dv[(dv["date"] > d0) & (dv["date"] <= t)]
+            for _, r in dv.iterrows():
+                after = r["after_price"] if r["after_price"] > 0 else r["reference_price"]
+                events.append({"日期": f"{r['date']:%Y-%m-%d}", "事件": "除權息", "事件前價格": float(r["before_price"]),
+                               "事件後參考價": float(after)})
+        cr = dp.capital_reductions(stock_id)
+        for _, r in cr[(cr["date"] > d0) & (cr["date"] <= t)].iterrows() if len(cr) else []:
+            events.append({"日期": f"{r['date']:%Y-%m-%d}", "事件": "減資", "事件前價格": float(r["p_old"]),
+                           "事件後參考價": float(r["p_ref"])})
+        sp = dp.load("TaiwanStockSplitPrice", stock_id)
+        if not sp.empty:
+            for _, r in sp[(sp["date"] > d0) & (sp["date"] <= t)].iterrows():
+                events.append({"日期": f"{r['date']:%Y-%m-%d}", "事件": "分割／面額變更",
+                               "事件前價格": float(r["before_price"]), "事件後參考價": float(r["after_price"])})
+    d_sh, issued = dp.issued_shares(stock_id, t)
+    per = dp.load("TaiwanStockPER", stock_id)
+    per = per[(per["date"] <= t) & (per["date"] > t - pd.DateOffset(days=dp.MAX_STALE_DAYS))] if len(per) else per
+    rev = dp.load("TaiwanStockMonthRevenue", stock_id)
+    rev = rev.drop_duplicates(["revenue_year", "revenue_month"], keep="last") if len(rev) else rev
+    rev = rev[rev["revenue_year"].isin([fy - 1, fy])].sort_values(["revenue_year", "revenue_month"]) if len(rev) else rev
+    years = train.train_years_for(year)
+    lab = agent.labeled()
+    th_rows = lab[lab["特徵年"].isin(years)] if years else agent.all_features()[agent.all_features()["特徵年"] == year]
+    th = rl.compute_thresholds(th_rows)
+    yuan = lambda v: None if v is None else float(v)
+    return {
+        "公司": {"代號": stock_id, "名稱": row["名稱"], "產業": row["產業"], "分析日（特徵日）": f"{t:%Y-%m-%d}",
+               "前一年度": fy},
+        "股價（元）": {"特徵日收盤": {"日期": f"{d1:%Y-%m-%d}" if d1 is not None else None, "收盤": p1},
+                   "一年前收盤": {"日期": f"{d0:%Y-%m-%d}" if d0 is not None else None, "收盤": p0},
+                   "近 12 個月月底收盤": {str(k): float(v) for k, v in month_end.items()},
+                   "期間公司行動（除權息、減資、分割）": events},
+        "股數": ({"特徵日發行股數（股）": issued, "日期": f"{d_sh:%Y-%m-%d}"} if issued is not None else
+               {f"{fy} 年底普通股股本（元）": yuan(bs(fy, ["OrdinaryShare", "CapitalStock"])), "面額（元）": dp.FACE_VALUE}),
+        "本益比（交易所公布，特徵日以前最近一筆）": (float(per.sort_values("date")["PER"].iloc[-1]) if len(per) else None),
+        f"{fy} 年損益表（四季合計，元）": {"營收": yuan(inc(["Revenue"])), "毛利": yuan(inc(["GrossProfit"])),
+                                  "歸屬母公司淨利": yuan(inc(dp.NI_PARENT_TYPES)), "合併淨利": yuan(inc(dp.NI_TOTAL_TYPES))},
+        f"{fy} 年底資產負債表（元）": {"歸屬母公司權益": yuan(bs(fy, dp.EQUITY_TYPES)), "總負債": yuan(bs(fy, ["Liabilities"])),
+                                 "總資產": yuan(bs(fy, ["TotalAssets"]))},
+        f"{fy - 1} 年底資產負債表（元）": {"歸屬母公司權益": yuan(bs(fy - 1, dp.EQUITY_TYPES)),
+                                     "總資產": yuan(bs(fy - 1, ["TotalAssets"]))},
+        f"{fy} 年現金流量表（全年，元）": {
+            "營業現金流": yuan(dp.statement_value("TaiwanStockCashFlowsStatement", stock_id, pd.Timestamp(f"{fy}-12-31"),
+                                             dp.CFO_TYPES)[0]),
+            "取得不動產、廠房及設備": yuan(dp.statement_value("TaiwanStockCashFlowsStatement", stock_id,
+                                                  pd.Timestamp(f"{fy}-12-31"), ["PropertyAndPlantAndEquipment"])[0])},
+        "月營收（元）": {f"{int(r['revenue_year'])}-{int(r['revenue_month']):02d}": float(r["revenue"])
+                     for _, r in rev.iterrows()} if len(rev) else {},
+        "領域規則門檻（訓練期特徵分布）": {k: v for k, v in th.items() if k not in ("樣本數",)},
+    }
+
+
+E4_DEFINITIONS = """計算口徑（與系統相同）：
+- 市值（億元）＝ 特徵日收盤 × 特徵日發行股數 ÷ 1 億（沒有發行股數時用 股本 ÷ 面額 當股數）
+- FCF 殖利率 ＝（營業現金流 − |取得不動產、廠房及設備|）÷ 市值
+- 帳面/市值 ＝ 前一年底歸屬母公司權益 ÷ 市值（權益 ≤ 0 為缺值）
+- 本益比 ＝ 提供的本益比（≤ 0 或沒有資料為缺值）
+- ROE ＝ 歸屬母公司淨利 ÷ 平均權益（前一年底與前兩年底平均；缺前期時用期末）
+- 毛利率 ＝ 毛利 ÷ 營收（損益表）
+- 年營收成長率 ＝ 前一年 12 個月營收合計 ÷ 前兩年 12 個月營收合計 − 1（月份不齊為缺值）
+- 營業現金流/淨利 ＝ 營業現金流 ÷ 合併淨利（淨利 ≤ 0 為缺值）
+- 負債比 ＝ 總負債 ÷ 總資產
+- 過去 12 個月含息報酬 ＝ 特徵日收盤 × Π（事件前價格 ÷ 事件後參考價）÷ 一年前收盤 − 1
+- 應計/平均總資產 ＝（合併淨利 − 營業現金流）÷ 平均總資產（前一年底與前兩年底平均；金融保險業不適用）
+- 盈餘品質紅旗：應計/平均總資產 ≥ 門檻（第 90 百分位）時觸發；缺值為不適用
+- 估值過高：帳面/市值 ≤ 門檻（第 10 百分位），或本益比（> 0）≥ 門檻（第 90 百分位）時觸發；兩者皆缺為不適用"""
+
+E4_SYSTEM_DIRECT = """你是台股研究助理。根據使用者提供的原始資料，自行計算需要的數字並撰寫結構化分析報告。規則：
+1. 只能使用提供的資料，不可提到資料以外的公司資訊、新聞或分析日之後的事。
+2. 照提供的計算口徑計算；key_figures 的 value 依下列格式填寫（與系統答案表相同）：
+   市值（億元）：「123.4 億元」；本益比、營業現金流/淨利：「1.2 倍」；帳面/市值：小數 3 位，例如「0.642」；
+   FCF 殖利率、ROE、毛利率、年營收成長率、負債比、過去 12 個月含息報酬、應計/平均總資產：百分比 1 位小數，例如「12.3%」。
+3. 只輸出 JSON，格式：
+{"stock_id": "代號", "as_of": "YYYY-MM-DD", "level": null,
+ "summary": "2～3 句總結",
+ "supporting": [{"text": "支持證據", "source": "用到的原始資料名稱"}],
+ "opposing": [{"text": "反對證據或注意事項", "source": "用到的原始資料名稱"}],
+ "rules": [{"rule": "盈餘品質紅旗 或 估值過高", "triggered": "觸發/未觸發/不適用", "text": "說明", "source": "..."}],
+ "key_figures": [{"field": "特徵名稱", "value": "數值與單位（缺值填 null）", "source": "用到的原始資料名稱"}],
+ "uncertainty": ["不確定性說明"]}
+4. key_figures 必須列出以下 11 項：市值（億元）、FCF 殖利率、帳面/市值、本益比、ROE、毛利率、年營收成長率、營業現金流/淨利、負債比、過去 12 個月含息報酬、應計/平均總資產。"""
+
+
+def _names(obj, out=None):
+    """原始資料中所有欄位名稱（直接 LLM 組的引用來源比對用）。"""
+    out = set() if out is None else out
+    if isinstance(obj, dict):
+        for k, v in obj.items():
+            out.add(str(k))
+            out.add(re.sub(r"（.*?）", "", str(k)).strip())   # 「2017 年損益表（四季合計，元）」也接受「2017 年損益表」
+            _names(v, out)
+    elif isinstance(obj, list):
+        for v in obj:
+            _names(v, out)
+    return out
+
+
+def e4_parse_value(field, val):
+    """把報告中的數值字串換成與答案表相同的單位；缺值回傳 None，無法解析回傳 nan。"""
+    import agent
+    if val is None or str(val).strip() in [w for w in agent.MISSING_WORDS if w]:
+        return None
+    s = str(val).replace(",", "").replace("−", "-")
+    m = re.search(r"([+\-]?\d+(?:\.\d+)?)\s*(%|％|兆元|億元|萬元|元|倍)?", s)
+    if not m:
+        return np.nan
+    x, u = float(m.group(1)), m.group(2) or ""
+    unit = agent.unit_of(field)
+    if unit == "比率":
+        return x / 100 if u in ("%", "％") else x
+    if unit == "億元":
+        return {"兆元": x * 1e4, "萬元": x / 1e4, "元": x / 1e8}.get(u, x)
+    return x / 100 if u in ("%", "％") else x     # 倍數寫成百分比時換算（數值相同，只是寫法不同）
+
+
+def _round_half_up(x, d, scale=1):
+    """一般的四捨五入（先轉十進位再乘倍率）；與 agent 的顯示、核對共用同一個函式。"""
+    import agent
+    return agent.round_half_up(x, d, scale)
+
+
+def e4_grade(report, key_row, group, evidence=None, raw_names=None):
+    """數字正確率、必要欄位覆蓋率、證據引用率、規則判定正確率（DESIGN 11.5 E4 方法定義）。"""
+    import agent
+    out = {"可解析": isinstance(report, dict)}
+    report = report if isinstance(report, dict) else {}
+    entity_ok = str(report.get("stock_id")) == key_row["代號"] and str(report.get("as_of")) == key_row["分析日"]
+    kf = {k.get("field"): k for k in report.get("key_figures") or [] if isinstance(k, dict)}
+    given = correct = cited = covered = 0
+    for f in agent.KEY_FIELDS:
+        truth = key_row[f]
+        truth = None if pd.isna(truth) else float(truth)
+        if f not in kf:
+            continue
+        covered += 1
+        x = e4_parse_value(f, kf[f].get("value"))
+        if x is None:
+            continue                                  # 回報缺值：不算數字；答案也是缺值時視為正確覆蓋
+        given += 1
+        scale, d = e4_display(f)
+        ok = (entity_ok and truth is not None and not pd.isna(x)
+              and _round_half_up(x, d, scale) == _round_half_up(truth, d, scale))
+        correct += ok
+        if group == "Agent":
+            eid = kf[f].get("evidence_id")
+            cited += bool(evidence and eid in evidence and evidence[eid]["field"] == f)
+        else:
+            src = str(kf[f].get("source") or "")
+            cited += bool(src and raw_names and any(n in src for n in raw_names if len(n) >= 2))
+    rules_ok = 0
+    rmap = {r.get("rule"): r for r in report.get("rules") or [] if isinstance(r, dict)}
+    for rname in ("盈餘品質紅旗", "估值過高"):
+        rules_ok += int(entity_ok and rname in rmap and rmap[rname].get("triggered") == key_row[f"規則：{rname}"])
+    n = len(agent.KEY_FIELDS)
+    out.update({"公司與期間相符": entity_ok, "回報數字": given, "正確數字": correct,
+                "數字正確率": correct / given if given else np.nan, "必要欄位覆蓋率": covered / n,
+                "證據引用率": cited / given if given else np.nan, "規則判定正確率": rules_ok / 2})
+    return out
+
+
+def _bootstrap_ci(diff, seed=SEED, n_boot=E4_N_BOOT):
+    diff = np.asarray(diff, dtype=float)
+    diff = diff[~np.isnan(diff)]
+    if len(diff) == 0:
+        return np.nan, np.nan, np.nan
+    rng = np.random.default_rng(seed)
+    boots = rng.choice(diff, size=(n_boot, len(diff)), replace=True).mean(axis=1)
+    return float(diff.mean()), float(np.percentile(boots, 2.5)), float(np.percentile(boots, 97.5))
+
+
+def _n_samples(df):
+    """樣本數：以（輪次, 代號）計，同一家在不同輪被抽到算不同樣本。"""
+    return len(df[["輪次", "代號"]].drop_duplicates())
+
+
+def e4_summary(rep_df):
+    """以公司為單位：先平均 3 次重複，再算兩組差與 bootstrap 95% 信賴區間；逐輪與合計。"""
+    metrics_ = ["數字正確率", "必要欄位覆蓋率", "證據引用率", "規則判定正確率"]
+    done = rep_df.groupby(["代號", "輪次"])["組別"].count()
+    full = done[done == 2 * E4_REPS].index
+    df = rep_df.set_index(["代號", "輪次"]).loc[full].reset_index()
+    comp = df.groupby(["輪次", "代號", "組別"])[metrics_].mean().reset_index()
+    rows = []
+    for scope, part in [(f"第 {r} 輪", comp[comp["輪次"] == r]) for r in sorted(comp["輪次"].unique())] + [("合計", comp)]:
+        for m in metrics_:
+            # 同一家可能在不同輪被抽到，樣本以（輪次, 代號）識別
+            wide = part.pivot(index=["輪次", "代號"], columns="組別", values=m)
+            if not set(E4_GROUPS) <= set(wide.columns):
+                continue
+            mean, lo, hi = _bootstrap_ci(wide["Agent"] - wide["直接 LLM"])
+            rows.append({"範圍": scope, "指標": m, "公司數": len(wide), "Agent": wide["Agent"].mean(),
+                         "直接 LLM": wide["直接 LLM"].mean(), "差（Agent − 直接）": mean,
+                         "95% 信賴區間下限": lo, "95% 信賴區間上限": hi})
+        ag = df[(df["組別"] == "Agent") & df["輪次"].isin(part["輪次"].unique())]
+        if len(ag):
+            nt = ag[ag["報告狀態"] == "ok"]
+            rows.append({"範圍": scope, "指標": "模板退回率（Agent）", "公司數": _n_samples(ag),
+                         "Agent": float((ag["報告狀態"] == "template").mean())})
+            rows.append({"範圍": scope, "指標": "數字正確率（Agent，不含模板報告）", "公司數": _n_samples(nt),
+                         "Agent": float(nt["數字正確率"].mean()) if len(nt) else np.nan})
+            rows.append({"範圍": scope, "指標": "平均核對輪數（Agent）", "公司數": _n_samples(ag),
+                         "Agent": float(ag["核對輪數"].mean())})
+    return pd.DataFrame(rows)
+
+
+def run_e4(limit=None, reps=E4_REPS):
+    """E4：90 家 × 2 組 × 3 次。LLM 回應全部快取，額度用完時停止，重跑即從中斷處接續。
+
+    limit：只跑前 limit 家（試跑用）；試跑不寫 e4_summary.csv。
+    執行方式：python -c "import evaluate; evaluate.run_e4()"
+    """
+    import agent
+    sample = e4_sample()
+    key = e4_answer_key(sample)
+    if limit is None:
+        out = key.copy()
+        for f in agent.KEY_FIELDS:
+            scale, d = e4_display(f)
+            out[f] = [_round_half_up(v, d, scale) if pd.notna(v) else np.nan for v in out[f]]
+        out.rename(columns={f: (f"{f}（%）" if e4_display(f)[0] == 100 else f) for f in agent.KEY_FIELDS}) \
+            .to_csv(E4_KEY_CSV, index=False, encoding="utf-8-sig")
+    keymap = key.set_index(["輪次", "代號"], drop=False)   # 同一家可能在不同輪被抽到
+    todo = sample if limit is None else sample.groupby("輪次").head(math.ceil(limit / 3)).head(limit)
+    records, stopped = [], None
+    try:
+        for rep in range(reps):
+            for _, s in todo.iterrows():
+                sid, year, k = s["代號"], s["特徵年"], keymap.loc[(s["輪次"], s["代號"])]
+                res = agent.run_analysis(sid, year, rep=rep)
+                if res.get("llm_error"):
+                    raise agent.LLMError(res["llm_error"])
+                g = e4_grade(res["report"], k, "Agent", evidence=res["ctx"]["evidence"])
+                records.append({"輪次": s["輪次"], "代號": sid, "重複": rep, "組別": "Agent",
+                                "報告狀態": res["status"], "核對輪數": len(res["attempts"]), **g})
+                raw = e4_raw_inputs(sid, year)
+                prompt = json.dumps({"原始資料": raw, "計算口徑": E4_DEFINITIONS}, ensure_ascii=False, default=str)
+                try:
+                    rep_json = agent.llm_call(E4_SYSTEM_DIRECT, prompt, rep=rep)
+                except ValueError:
+                    rep_json = None
+                g = e4_grade(rep_json, k, "直接 LLM", raw_names=_names(raw))
+                records.append({"輪次": s["輪次"], "代號": sid, "重複": rep, "組別": "直接 LLM",
+                                "報告狀態": "ok" if rep_json is not None else "JSON 錯誤", "核對輪數": np.nan, **g})
+                print(f"第 {rep + 1} 次 {sid}：Agent {records[-2]['數字正確率']:.2f}（{res['status']}，"
+                      f"{len(res['attempts'])} 輪）｜直接 LLM {records[-1]['數字正確率']:.2f}", flush=True)
+    except agent.LLMError as e:
+        stopped = str(e)
+        print(f"停止：{e}（已完成 {len(records) // 2} 筆；重跑會從快取接續）")
+    rep_df = pd.DataFrame(records)
+    total = len(todo) * reps
+    print(f"完成 {len(rep_df) // 2} / {total}")
+    if limit is None:
+        rep_df.to_csv(E4_REPORTS_CSV, index=False, encoding="utf-8-sig")
+        if stopped is None and len(rep_df) == 2 * total:
+            summ = e4_summary(rep_df)
+            summ.round(4).to_csv(E4_SUMMARY_CSV, index=False, encoding="utf-8-sig")
+            return rep_df, summ
+    return rep_df, None
 
 
 def run_e5():

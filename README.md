@@ -111,8 +111,9 @@
 - [x] 實驗 E2 組合表現（[`evaluate.py`](evaluate.py)）：每輪前 50 檔等權買進持有 vs 0050、隨機 50 檔（毛報酬，未計交易成本）；結果見 [`results/e2_portfolio.csv`](results/e2_portfolio.csv) 與 DESIGN 11.5
 - [x] 實驗 E3 特徵關聯（[`evaluate.py`](evaluate.py)）：五等分正例率與 8 年穩定性、三組中位數（依下市分層）、LightGBM SHAP；結果見 `results/e3_*.csv` 與 DESIGN 11.5
 - [x] 2 條領域規則（盈餘品質、估值過高），附固定說明與文獻出處（[`rules.py`](rules.py)、[`knowledge/`](knowledge/)）：Sloan (1996)、Lakonishok et al. (1994)，門檻只用訓練特徵年計算（[`results/rule_thresholds.csv`](results/rule_thresholds.csv)）
-- [ ] LLM Agent：SHAP、相似案例、報告生成與數字核對；E4 數字正確率（`agent.py`）
-- [ ] Streamlit 個股分析頁（`app.py`）：骨架已完成（[`analysis_page.py`](analysis_page.py)，分頁④；模型相關區塊先用標示清楚的假資料）
+- [x] LLM Agent（[`agent.py`](agent.py)）：模型分數與當年名次、SHAP、kNN 相似案例、領域規則、Gemini（`gemini-3.5-flash-lite`）報告與數字核對（最多 3 輪，失敗改用模板報告）、追問；`python agent.py` 自我檢查
+- [x] 實驗 E4 報告品質（[`evaluate.py`](evaluate.py)）：Agent vs 直接 LLM，90 個樣本 × 3 次；數字正確率 Agent 1.000、直接 LLM 0.623（差 +0.377，95% 信賴區間 0.359～0.397），Agent 模板退回率 10.4%；結果見 [`results/e4_summary.csv`](results/e4_summary.csv) 與 DESIGN 11.5
+- [x] Streamlit 個股分析頁（[`analysis_page.py`](analysis_page.py)，`app.py` 分頁④）：F1–F4 皆為真資料；分析日 2018–2026 可評分（2021 年起為上線版模型，無測試結果）
 
 ### 規劃中：延伸目標（視時程加入）
 
@@ -160,8 +161,12 @@ python collect_data.py     # （選用）抓全市場資料到 data/raw/（約 9
                            #   進度：python collect_data.py --status
 python -c "import verify_data as v; [v.fetch(d, '0050', v.START_DATE) for d in ('TaiwanStockPrice', 'TaiwanStockDividendResult')]"
                            # 補抓 0050 作為對照（2 次 API）
+python build_dataset.py    # 分頁④需要：2013–2020 資料集＋2021–2026 特徵（需全市場資料）
+python train.py            # 分頁④需要：三輪模型＋上線版模型
 streamlit run app.py       # 瀏覽器開啟 http://localhost:8501（全市場第一次開啟約需 4 分鐘計算特徵，之後讀本機快取）
 ```
+
+分頁④「個股分析」的 LLM 報告與追問需要在 `.env` 設定 `GEMINI_API_KEY`；沒有金鑰時仍可使用，報告改為程式產生的模板報告。
 
 計算規則與限制（例如正式資料集建立前不做前 5% 排名、減資與分割的還原、興櫃期間排除、價格異常與 IFRS 口徑改變的處理）見 [DESIGN.md](DESIGN.md) 第 11.3 節。
 
@@ -238,13 +243,13 @@ streamlit run app.py       # 瀏覽器開啟 http://localhost:8501（全市場�
 ├── verify_data.py            # 已完成：資料可行性驗證
 ├── demo_pipeline.py          # 已完成：Demo 用的 Point-in-Time 計算（全市場或 30 檔抽樣）
 ├── collect_data.py           # 已完成：全市場資料收集（可中斷接續）
-├── build_dataset.py          # Point-in-Time 特徵與標記資料表（→ data/dataset.parquet）
-├── train.py                  # 已完成：LightGBM 與邏輯迴歸三輪 walk-forward 訓練
-├── evaluate.py               # 已完成：E1–E3 回測、Baseline 比較與特徵關聯
+├── build_dataset.py          # Point-in-Time 特徵與標記資料表（→ data/dataset.parquet；2021–2026 特徵 → data/live_features.parquet）
+├── train.py                  # 已完成：LightGBM 與邏輯迴歸三輪 walk-forward 訓練；個股分析用的上線版模型
+├── evaluate.py               # 已完成：E1–E3 回測、Baseline 比較與特徵關聯；E4 報告品質
 ├── rules.py                  # 領域規則檢查（盈餘品質、估值過高）
-├── agent.py                  # 規劃中：LLM Agent
-├── app.py                    # Streamlit 網站（資料管線 Demo＋個股分析頁骨架）
-├── analysis_page.py          # 個股分析頁骨架（F1–F4；模型相關先用假資料）
+├── agent.py                  # 已完成：LLM Agent（工具、報告、數字核對、追問）
+├── app.py                    # Streamlit 網站（資料管線 Demo＋個股分析頁）
+├── analysis_page.py          # 個股分析頁（F1–F4；按下按鈕才呼叫 Gemini）
 ├── knowledge/                # 規則說明與文獻出處
 │   └── README.md
 ├── results/                  # 驗證結果、Demo 截圖、訓練筆數與實驗 E1–E3 結果

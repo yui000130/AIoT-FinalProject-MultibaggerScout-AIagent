@@ -1,6 +1,6 @@
 # results/ －驗證與實驗結果
 
-這個資料夾放資料驗證、`train.py`、`evaluate.py` 與（之後）`agent.py` 產生的彙總結果。**目前已有實驗 E1–E3 的結果**（`e1_*`、`e2_portfolio.csv`、`e3_*`）；E4 尚未完成。
+這個資料夾放資料驗證、`train.py`、`evaluate.py` 與（之後）`agent.py` 產生的彙總結果。**目前已有實驗 E1–E4 的結果**（`e1_*`、`e2_portfolio.csv`、`e3_*`、`e4_*`）。
 
 ## 已放入的檔案
 
@@ -50,9 +50,8 @@
 
 | 實驗 | 預計檔案 | 內容 |
 |---|---|---|
-| E4 | `e4_agent_eval.csv` | Agent 報告 vs 單純 LLM 的數字正確率、證據引用率；（延伸）使用者評分 |
 | E5 | `e5_sensitivity.csv` | （延伸）觀察期 3 年 vs 5 年、主要 vs 對照標記、營收門檻 5% / 10% / 15%、結束價 5 / 20 / 60 日的 Precision@50 比較 |
 
-E1–E3 已完成，檔案見上方表格（目前只有 csv，尚未製圖）。
+E1–E3 已完成，檔案見上方表格（目前只有 csv，尚未製圖）。E4 已完成：`e4_answer_key.csv`（答案表：90 個樣本的 11 項數字與規則判定）、`e4_reports.csv`（540 份報告的逐份評分）、`e4_summary.csv`（兩組比較與 bootstrap 信賴區間），說明見 `DESIGN.md` 11.5。
 
 每次更新結果時，請同步更新 `DESIGN.md` 第 11 節與 Change Log。

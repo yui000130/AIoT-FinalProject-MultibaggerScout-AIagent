@@ -1,16 +1,16 @@
 """
-app.py －Streamlit 網站（目前為資料管線 Demo）
+app.py －Streamlit 網站（資料管線 Demo＋個股分析）
 
-目前內容（只讀本機資料，計算見 demo_pipeline.py，不呼叫 API、不接 LLM）：
+目前內容（只讀本機資料；分頁 1–3 計算見 demo_pipeline.py，不呼叫 API；分頁 4 按下按鈕或追問時才呼叫 Gemini）：
   有 data/raw/（collect_data.py 抓的全市場資料）就用全市場，否則用 cache/ 的 30 檔抽樣。
   原始資料只在本機，不上傳；頁面標示資料來源 FinMind（FinMind 授權要求）。
   1. 我們要找什麼樣的股票：白話說明主要標記，自動挑出三種例子
   2. 時光機：選股票與特徵年，看當時可用的 10 項特徵與 5 年後的結果
   3. 總表：每檔每年一列，可排序
-  4. 個股分析（骨架，analysis_page.py）：F1–F4 版面；特徵、規則、基準率為真資料，模型分數等標示假資料
+  4. 個股分析（analysis_page.py、agent.py）：F1–F4；模型分數、名次與潛力等級、SHAP、相似案例、領域規則、
+     經數字核對的 Agent 報告與追問
 
 之後規劃加入的頁面（見 DESIGN.md）：
-  - 個股分析：輸入股票代號與分析日期，顯示 Agent 報告、相似案例卡片，可追問
   - （延伸）全市場篩選、回測成果
 
 執行：streamlit run app.py
@@ -268,7 +268,7 @@ def main():
                  f"`{dp.FETCH_BENCHMARK_CMD}`")
         st.stop()
     table = get_table()
-    tab1, tab2, tab3, tab4 = st.tabs(["① 我們要找什麼樣的股票", "② 時光機", "③ 總表", "④ 個股分析（骨架）"])
+    tab1, tab2, tab3, tab4 = st.tabs(["① 我們要找什麼樣的股票", "② 時光機", "③ 總表", "④ 個股分析"])
     with tab1:
         section_target(table)
     with tab2:

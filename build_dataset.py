@@ -17,9 +17,15 @@ build_dataset.py －Point-in-Time「公司 × 年份」資料集建構
      UNKNOWN 以缺值（pd.NA）儲存，原因另存欄位，不當成負例
   5. 標記揭曉日 ＝ 觀察期終點（t + 5 年 4 月最後交易日）；訓練時只能用揭曉日 ≤ 決策日的列
 
+另對 2021–2026 年（個股分析用，DESIGN 5.6「個股分析的分析日與模型對應」）：
+  同樣的母體與流動性過濾，只計算 10 項特徵＋產業類別與規則輸入（應計／平均總資產），
+  **不計算報酬與標記**（標記尚未揭曉或不在 5.6 的標記範圍）；不併入正式資料集。
+
 輸入：data/raw/（collect_data.py），經 demo_pipeline.py 讀取
-輸出：data/dataset.parquet（每列 = 公司 × 特徵年；原始資料衍生，只在本機、不上傳）
-      results/dataset_summary.csv（各特徵年的母體、過濾、標記筆數；只有統計數字）
+輸出：data/dataset.parquet（2013–2020，每列 = 公司 × 特徵年；原始資料衍生，只在本機、不上傳）
+      data/live_features.parquet（2021–2026，只有特徵；只在本機、不上傳）
+      results/dataset_summary.csv（2013–2020 各特徵年的母體、過濾、標記筆數；只有統計數字）
+執行：python build_dataset.py（兩個檔一起產生）
 """
 
 import math
@@ -38,7 +44,9 @@ END_PRICE_DAYS = dp.END_PRICE_DAYS   # 結束價取最後 20 個交易日（約�
 GROWTH_CAGR = dp.GROWTH_CAGR   # 營收 5 年年複合成長率 ≥ 10%（事先固定，不依測試資料調整）
 RANKABLE_STATUS = {"OK", "下市暫估"}
 
+LIVE_YEARS = list(range(2021, 2027))   # 個股分析用的特徵年（只算特徵，DESIGN 5.6）
 OUT_FILE = dp.BASE / "data" / "dataset.parquet"
+LIVE_FILE = dp.BASE / "data" / "live_features.parquet"
 SUMMARY_FILE = dp.BASE / "results" / "dataset_summary.csv"
 # 0050 2025-06 分割暫停交易 5 天，交易日曆少這幾天；檢查不影響任何特徵日與終點
 CALENDAR_GAP = (pd.Timestamp("2025-06-11"), pd.Timestamp("2025-06-17"))
@@ -50,6 +58,10 @@ def check_calendar():
         for d in (dp.feature_date(y), dp.horizon_end(y)):
             assert not (CALENDAR_GAP[0] <= d <= CALENDAR_GAP[1]), f"{y} 年的日期 {d:%Y-%m-%d} 落在日曆缺口"
             assert d.month == 4 and d.year in (y, y + HORIZON_YEARS), d
+    for y in LIVE_YEARS:
+        d = dp.feature_date(y)
+        assert not (CALENDAR_GAP[0] <= d <= CALENDAR_GAP[1]), f"{y} 年的特徵日 {d:%Y-%m-%d} 落在日曆缺口"
+        assert d.month == 4 and d.year == y, d
 
 
 def load_universe():
@@ -141,9 +153,8 @@ def make_labels(df, pct=TOP_PCT):
     return df
 
 
-def build_year(uni, year, rows_cache):
-    t = dp.feature_date(year)
-    stats = {"特徵年": year, "特徵日": t.date()}
+def select_sample(uni, t, stats):
+    """特徵日 t 的母體（上市滿一年）與流動性過濾；回傳 (保留代號清單, 日均成交值)，統計寫入 stats。"""
     # 1. 母體
     eligible, reasons = [], {}
     for sid in uni.index:
@@ -164,6 +175,13 @@ def build_year(uni, year, rows_cache):
     keep = liquidity_keep(tv)
     stats["排除：流動性最低 10%"] = len(eligible) - len(keep)
     stats["流動性門檻（日均成交值，萬元）"] = round(tv[sorted(keep)].min() / 1e4, 1) if keep else np.nan
+    return keep, tv
+
+
+def build_year(uni, year, rows_cache):
+    t = dp.feature_date(year)
+    stats = {"特徵年": year, "特徵日": t.date()}
+    keep, tv = select_sample(uni, t, stats)
     # 3. 特徵、報酬、營收 CAGR（沿用 demo 總表的計算）
     rows = []
     for sid in sorted(keep):
@@ -256,6 +274,39 @@ def analyze_row(sid, year):
     return row
 
 
+def live_row(sid, year):
+    """個股分析用：只有特徵、產業與規則輸入，不呼叫任何報酬或標記計算（不碰特徵日之後的資料）。"""
+    t = dp.feature_date(year)
+    meta = dp.stock_meta(sid)
+    row = {"代號": sid, "名稱": meta["name"], "產業": meta["industry"] or "（無資料）",
+           "特徵年": year, "特徵日": t.date()}
+    missing = []
+    for k, f in dp.compute_features(sid, year).items():
+        row[k] = f["value"]
+        if f["missing"]:
+            missing.append(f"{k}：{f['missing']}")
+    row.update({"缺值數": len(missing), "缺值原因": "；".join(missing)})
+    acc, awhy = accrual_ratio(sid, year, row["產業"])
+    row.update({"應計/平均總資產": acc, "應計說明": awhy})
+    return row
+
+
+def build_live_year(uni, year):
+    """2021–2026 特徵年：母體與流動性過濾同 build_year，只算特徵，不產生報酬與標記。"""
+    t = dp.feature_date(year)
+    stats = {"特徵年": year, "特徵日": t.date()}
+    keep, tv = select_sample(uni, t, stats)
+    rows = []
+    for sid in sorted(keep):
+        row = live_row(sid, year)
+        row["日均成交值（萬元）"] = tv[sid] / 1e4
+        rows.append(row)
+    df = pd.DataFrame(rows)
+    stats["樣本"] = len(df)
+    stats["10 項特徵齊全"] = int((df["缺值數"] == 0).sum())
+    return df, stats
+
+
 def main():
     if not dp.FULL_MARKET:
         sys.exit("找不到全市場資料（data/raw/parts/），請先執行 collect_data.py")
@@ -274,6 +325,17 @@ def main():
     s = pd.DataFrame(summary)
     s.to_csv(SUMMARY_FILE, index=False, encoding="utf-8-sig")
     print(f"共 {len(data)} 列 → {OUT_FILE}；摘要 → {SUMMARY_FILE}")
+
+    # 個股分析用的 2021–2026 特徵（不含標記；統計只印出，不寫入 results/）
+    live = []
+    for y in LIVE_YEARS:
+        df, stats = build_live_year(uni, y)
+        live.append(df)
+        print(f"{y}（只算特徵）：母體 {stats['母體（上市滿一年）']}、樣本 {stats['樣本']}、"
+              f"特徵齊全 {stats['10 項特徵齊全']}", flush=True)
+    live = pd.concat(live, ignore_index=True)
+    live.to_parquet(LIVE_FILE, index=False)
+    print(f"共 {len(live)} 列 → {LIVE_FILE}")
 
 
 if __name__ == "__main__":

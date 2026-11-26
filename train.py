@@ -25,9 +25,14 @@ train.py －三輪 walk-forward 訓練 LightGBM 與邏輯迴歸
   2. 所有訓練列的「標記揭曉日」≤ 測試特徵日（不能只用特徵年 + 5 代替）
   3. 訓練集與測試集沒有重疊的列；模型欄位剛好等於特徵白名單
 
-輸入：data/dataset.parquet（build_dataset.py）
+個股分析用的上線版模型（DESIGN 5.6「個股分析的分析日與模型對應」，2026-11-24）：
+  分析日 t ＝ 2021–2026：LightGBM 以特徵年 2013 ～ min(t − 5, 2020) 重訓，參數與三輪相同、不重新選參；
+  這些模型沒有測試結果，不寫入 results/。時間一致性同樣檢查：訓練標記揭曉日 ≤ t 的特徵日。
+
+輸入：data/dataset.parquet、data/live_features.parquet（build_dataset.py；後者只用來取 t 的特徵日）
 輸出：models/lgbm_round{n}.joblib、models/logit_round{n}.joblib（模型，只在本機）
       models/scores_round{n}.parquet（測試年每家公司的模型分數，給 evaluate.py；只在本機）
+      models/lgbm_live{t}.joblib（上線版模型，t ＝ 2021–2026；只在本機）
       results/train_summary.csv（各輪訓練／測試筆數、正例數、訓練正例率；只有統計數字）
 
 執行方式：python train.py
@@ -56,6 +61,9 @@ FOLDS = [
     {"train": [2013, 2014, 2015], "test": 2020},
 ]
 HORIZON_YEARS = 5
+LIVE_DATASET = BASE / "data" / "live_features.parquet"
+LIVE_YEARS = list(range(2021, 2027))   # 上線版模型的分析日（特徵年）
+LAST_LABEL_YEAR = 2020                 # 標記範圍只到 2020 特徵年（DESIGN 5.6）
 SEED = 42
 TARGET = "y_main"
 
@@ -189,14 +197,46 @@ def save_model(model, name, round_no):
     return path
 
 
+def train_years_for(t_year):
+    """分析日（特徵年）t 可用的訓練特徵年：2013 ～ min(t − 5, 2020)；t < 2018 回傳空清單（不評分）。"""
+    last = min(t_year - HORIZON_YEARS, LAST_LABEL_YEAR)
+    return list(range(2013, last + 1))
+
+
+def industry_categories(train):
+    """LightGBM 的產業類別清單：取自訓練集（與三輪訓練相同口徑）。"""
+    return sorted(train["產業"].dropna().unique())
+
+
+def train_live(df):
+    """上線版 LightGBM（t ＝ 2021–2026）：參數與三輪相同；只印出筆數，不寫入 results/。"""
+    if not LIVE_DATASET.exists():
+        sys.exit(f"找不到 {LIVE_DATASET}，請先執行 python build_dataset.py")
+    live = pd.read_parquet(LIVE_DATASET)
+    for t_year in LIVE_YEARS:
+        years = train_years_for(t_year)
+        train = df[df["特徵年"].isin(years) & df[TARGET].notna()]
+        t_dates = live.loc[live["特徵年"] == t_year, "特徵日"].unique()
+        assert len(t_dates) == 1, f"{t_year} 的特徵日不唯一"
+        # 時間一致性（DESIGN 5.5 第 10 條）：訓練標記在 t 的特徵日之前已揭曉
+        assert max(years) + HORIZON_YEARS <= t_year, "訓練觀察期超過分析日"
+        assert train["標記揭曉日"].notna().all() and (train["標記揭曉日"] <= t_dates[0]).all(), \
+            "有訓練標記在分析日之後才揭曉"
+        X = to_model_frame(train, industry_categories(train))
+        y = train[TARGET].astype(int).to_numpy()
+        joblib.dump(train_lightgbm(X, y), MODEL_DIR / f"lgbm_live{t_year}.joblib")
+        print(f"上線版 {t_year}：訓練 {years[0]}–{years[-1]}（{len(train)} 筆、正例 {int(y.sum())}）；"
+              f"時間一致性檢查通過（無測試結果）")
+
+
 def main():
-    """三輪各訓練兩種模型，存模型、測試年模型分數與彙總表。"""
+    """三輪各訓練兩種模型，存模型、測試年模型分數與彙總表；再訓練個股分析用的上線版模型。"""
     df = load_dataset()
     ranks = rank_by_year(df)   # 每個特徵年內的排名，只用同年特徵
     rows = []
     for round_no, fold in enumerate(FOLDS, start=1):
         train, test, info = split(df, fold)
-        categories = sorted(train["產業"].dropna().unique())
+        categories = industry_categories(train)
         X_train = to_model_frame(train, categories)
         y_train = train[TARGET].astype(int).to_numpy()
         X_test = to_model_frame(test, categories)
@@ -238,6 +278,8 @@ def main():
     summary.to_csv(SUMMARY_CSV, index=False, encoding="utf-8-sig")
     print(f"\n已輸出 {SUMMARY_CSV.relative_to(BASE)}、models/（模型與測試年模型分數）")
     print(summary.to_string(index=False))
+    print()
+    train_live(df)
 
 
 if __name__ == "__main__":
