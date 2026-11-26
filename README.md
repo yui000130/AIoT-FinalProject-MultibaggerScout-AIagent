@@ -118,7 +118,8 @@
 ### 延伸目標（視時程加入）
 
 - [x] 基本面確認加入 EPS 條件（另存為 `y_main_eps`；幾乎不篩選，主要標記仍只用營收，見 DESIGN 11.4）
-- [ ] E4 使用者人工評分、E5 敏感度分析
+- [x] E5 敏感度分析（[`evaluate.py`](evaluate.py)）：對照標記 `y_raw` 與營收門檻 5% / 10% / 15% 各自重訓 LightGBM；門檻 10%、15% 勝過隨機的輪次多於 `y_raw` 與 5%，沒有單一門檻三輪皆最好；結果見 [`results/e5_sensitivity.csv`](results/e5_sensitivity.csv) 與 DESIGN 11.5（觀察期 3 年、結束價 5 / 60 日列為 Future Work）
+- [ ] E4 使用者人工評分
 - [ ] 網站全市場篩選頁、回測成果頁，部署至 Streamlit Community Cloud
 
 各項目未完成時的替代方案見 [DESIGN.md](DESIGN.md) 第 2.3 節。
@@ -245,7 +246,7 @@ streamlit run app.py       # 瀏覽器開啟 http://localhost:8501（全市場�
 ├── collect_data.py           # 已完成：全市場資料收集（可中斷接續）
 ├── build_dataset.py          # Point-in-Time 特徵與標記資料表（→ data/dataset.parquet；2021–2026 特徵 → data/live_features.parquet）
 ├── train.py                  # 已完成：LightGBM 與邏輯迴歸三輪 walk-forward 訓練；個股分析用的上線版模型
-├── evaluate.py               # 已完成：E1–E3 回測、Baseline 比較與特徵關聯；E4 報告品質
+├── evaluate.py               # 已完成：E1–E3 回測、Baseline 比較與特徵關聯；E4 報告品質；E5 敏感度分析
 ├── rules.py                  # 領域規則檢查（盈餘品質、估值過高）
 ├── agent.py                  # 已完成：LLM Agent（工具、報告、數字核對、追問）
 ├── app.py                    # Streamlit 網站（資料管線 Demo＋個股分析頁）

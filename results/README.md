@@ -1,6 +1,6 @@
 # results/ －驗證與實驗結果
 
-這個資料夾放資料驗證、`train.py`、`evaluate.py` 與（之後）`agent.py` 產生的彙總結果。**目前已有實驗 E1–E4 的結果**（`e1_*`、`e2_portfolio.csv`、`e3_*`、`e4_*`）。
+這個資料夾放資料驗證、`train.py`、`evaluate.py` 與（之後）`agent.py` 產生的彙總結果。**目前已有實驗 E1–E5 的結果**（`e1_*`、`e2_portfolio.csv`、`e3_*`、`e4_*`、`e5_sensitivity.csv`）。
 
 ## 已放入的檔案
 
@@ -46,11 +46,11 @@
 
 由 `streamlit run app.py` 開啟網頁後截圖（2026-11-02），資料為 `verify_data.py` 的 30 檔抽樣快取加 0050。計算規則見 `DESIGN.md` 第 11.3 節。網頁現在有全市場資料時會改用全市場，截圖尚未更新。這是資料管線示範，不是模型實驗結果。
 
-## 規劃中的實驗結果
+## 實驗 E5（延伸，已完成）
 
-| 實驗 | 預計檔案 | 內容 |
-|---|---|---|
-| E5 | `e5_sensitivity.csv` | （延伸）觀察期 3 年 vs 5 年、主要 vs 對照標記、營收門檻 5% / 10% / 15%、結束價 5 / 20 / 60 日的 Precision@50 比較 |
+| 檔案 | 內容 |
+|---|---|
+| `e5_sensitivity.csv` | 實驗 E5（`evaluate.py`，2026-11-26）：4 種標記（對照標記 `y_raw`、營收門檻 5% / 10%（＝ `y_main`）/ 15%）各自重訓三輪 LightGBM，每輪的訓練／測試筆數與正例、Precision@20/50、Recall@50、PR-AUC，以及該標記隨機 1,000 次（種子 42）的平均、第 5／95 百分位與是否高於第 95 百分位。觀察期 3 年、結束價 5 / 60 日列為 Future Work |
 
 E1–E3 已完成，檔案見上方表格（目前只有 csv，尚未製圖）。E4 已完成：`e4_answer_key.csv`（答案表：90 個樣本的 11 項數字與規則判定）、`e4_reports.csv`（540 份報告的逐份評分）、`e4_summary.csv`（兩組比較與 bootstrap 信賴區間），說明見 `DESIGN.md` 11.5。
 

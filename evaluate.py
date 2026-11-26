@@ -14,7 +14,11 @@ evaluate.py －回測與 Baseline 比較
       五等分正例率：10 項特徵各自在每個特徵年內分五等分、缺值另成一組；8 年合併正例率與「Q5 高於 Q1 的年數」
       三組中位數：主要正例、高報酬但營收未過門檻、其餘可判定，再依期間下市分層；附 0050 背景
       SHAP：LightGBM 內建 pred_contrib（TreeSHAP），三輪測試年的平均 |SHAP| 排名與方向（Spearman）
-  E5（延伸）：敏感度分析（待完成）
+  E5（延伸）：敏感度分析（2026-11-26 完成；方法見 DESIGN 11.5 E5 方法定義）
+      4 種標記：y_raw、營收門檻 5% / 10%（＝ y_main）/ 15%；每種各自依三輪切分重訓 LightGBM（參數同 train.py）
+      指標：該標記可判定母體上的 Precision@20/50、Recall@50、PR-AUC 與各自的隨機基準（種子 42，1,000 次）
+      執行：python -c "import evaluate; evaluate.run_e5()"（需先執行 python train.py 與 E1）
+      輸出：results/e5_sensitivity.csv
 （E4 為 Agent 報告評估，見 agent.py）
 
 E1 方法定義（DESIGN 11.5，執行前固定）：
@@ -61,6 +65,8 @@ E2_CSV = BASE / "results" / "e2_portfolio.csv"
 E3_QUINTILE_CSV = BASE / "results" / "e3_quintile.csv"
 E3_GROUPS_CSV = BASE / "results" / "e3_groups.csv"
 E3_SHAP_CSV = BASE / "results" / "e3_shap.csv"
+E5_CSV = BASE / "results" / "e5_sensitivity.csv"
+E5_THRESHOLDS = (0.05, 0.10, 0.15)   # 營收 5 年 CAGR 門檻（DESIGN 11.5 E5；10% 即 y_main）
 
 TARGET = "y_main"
 K_LIST = (20, 50)
@@ -684,10 +690,81 @@ def run_e4(limit=None, reps=E4_REPS):
     return rep_df, None
 
 
+def e5_labels(df):
+    """E5 的 4 種標記（DESIGN 11.5 E5 方法定義）：y_raw 與營收門檻 5% / 10% / 15%。
+
+    門檻版：y_raw = 1 且 CAGR 可判定 → CAGR ≥ 門檻；y_raw = 1 但 CAGR 無法判定 → UNKNOWN；
+    y_raw = 0 → 0；y_raw UNKNOWN → UNKNOWN（同 build_dataset.py 的 y_main 規則）。
+    """
+    y_raw = df["y_raw"]
+    cagr_ok = df["CAGR 狀態"] == "OK"
+    labels = {"y_raw（報酬前 5%）": y_raw.astype("Int64")}
+    for g in E5_THRESHOLDS:
+        lab = pd.Series(pd.NA, index=df.index, dtype="Int64")
+        lab[y_raw == 0] = 0
+        top = (y_raw == 1) & cagr_ok
+        lab[top] = (df.loc[top, "營收 CAGR"] >= g).astype(int)
+        labels[f"營收門檻 {round(g * 100)}%"] = lab
+    # 自我檢查：10% 版本必須與資料集的 y_main 完全相同
+    main = labels["營收門檻 10%"]
+    assert main.isna().equals(df["y_main"].isna()), "10% 門檻重算的 UNKNOWN 與 y_main 不同"
+    assert (main.dropna() == df["y_main"].dropna().astype(int)).all(), "10% 門檻重算結果與 y_main 不同"
+    return labels
+
+
 def run_e5():
-    """（延伸）E5：觀察期、標記定義、營收門檻的敏感度分析。"""
-    # TODO
-    raise NotImplementedError
+    """（延伸）E5：主要／對照標記與營收門檻的敏感度分析（DESIGN 11.5 E5 方法定義）。
+
+    每種標記各自依三輪切分重訓 LightGBM（參數、特徵、產業類別處理同 train.py），
+    在該標記可判定的測試母體上算指標與隨機基準（種子 42，1,000 次）。
+    自我檢查：營收門檻 10%（＝ y_main）重訓的分數與 train.py 相同、指標與 results/e1_ranking.csv 相同。
+    """
+    df = train.load_dataset()
+    labels = e5_labels(df)
+    e1 = pd.read_csv(E1_CSV, encoding="utf-8-sig")
+    rows = []
+    for name, lab in labels.items():
+        d = df.copy()
+        d[train.TARGET] = lab            # train.split 以 y_main 欄判定可訓練列，這裡換成該標記
+        for round_no, fold in enumerate(train.FOLDS, start=1):
+            tr, test, info = train.split(d, fold)
+            cats = train.industry_categories(tr)
+            y_tr = tr[train.TARGET].astype(int).to_numpy()
+            model = train.train_lightgbm(train.to_model_frame(tr, cats), y_tr)
+            test = test.assign(score=model.predict_proba(train.to_model_frame(test, cats))[:, 1])
+
+            ev = test[test[train.TARGET].notna()]
+            ordered = ev.sort_values(["score", "代號"], ascending=[False, True], kind="mergesort")
+            y_ord = ordered[train.TARGET].astype(int).to_numpy()
+            m = metrics(y_ord)
+
+            rng = np.random.default_rng(SEED)
+            y = ev[train.TARGET].astype(int).to_numpy()
+            sims = pd.DataFrame([metrics(y[rng.permutation(len(y))]) for _ in range(N_RANDOM)])
+
+            if name == "營收門檻 10%":   # 與 train.py、E1 一致性檢查
+                saved = pd.read_parquet(train.MODEL_DIR / f"scores_round{round_no}.parquet")
+                chk = test[["代號", "score"]].merge(saved[["代號", "score_lgbm"]], on="代號", validate="one_to_one")
+                assert len(chk) == len(test) and np.allclose(chk["score"], chk["score_lgbm"], rtol=0, atol=1e-12), \
+                    f"第 {round_no} 輪 y_main 重訓分數與 train.py 不同"
+                ref = e1[(e1["輪次"] == round_no) & (e1["方法"] == "LightGBM")].iloc[0]
+                for k, v in m.items():
+                    assert round(v, 4) == round(float(ref[k]), 4), f"第 {round_no} 輪 {k} 與 E1 不同"
+
+            base = {"標記": name, "輪次": round_no, "測試特徵年": fold["test"],
+                    "訓練筆數": len(tr), "訓練正例": int(y_tr.sum()),
+                    "訓練 UNKNOWN 排除": info["訓練 UNKNOWN 排除"],
+                    "可評估筆數": len(ev), "測試正例": int(y.sum()), "基準正例率": y.mean()}
+            for k in ["Precision@20", "Precision@50", "Recall@50", "PR-AUC"]:
+                q = sims[k].quantile([0.05, 0.95])
+                rows.append({**base, "指標": k, "LightGBM": m[k], "隨機平均": sims[k].mean(),
+                             "隨機第 5 百分位": q[0.05], "隨機第 95 百分位": q[0.95],
+                             "高於隨機第 95 百分位": bool(m[k] > q[0.95])})
+        print(f"{name}：三輪完成")
+    out = pd.DataFrame(rows)
+    out.round(4).to_csv(E5_CSV, index=False, encoding="utf-8-sig")
+    print(f"已輸出 {E5_CSV.relative_to(BASE)}；10% 門檻與 y_main、train.py 分數、E1 指標一致性檢查通過")
+    return out
 
 
 def main():
